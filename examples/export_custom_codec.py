@@ -50,7 +50,7 @@ async def main():
             print(f"Error: {e}")
 
 
-def save_payload_codecs(data, base_dir='payload_codecs'):
+def save_payload_codecs(data, base_dir='export/payload_codecs'):
     """
     Saves encoder and decoder scripts from the JSON data to files in the specified directory structure.
 
