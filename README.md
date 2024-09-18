@@ -11,7 +11,7 @@ Use at your own risk.
 There are some feature missing in the original firmware from Milesight, which can become a problem, especially in large installations with several gateways.
 
 For example:
-- [x] Its not possible to export the device list. -> Fixed  [-> Fixed](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/export_devices.py)
+- [x] Its not possible to export the device list. [-> Fixed](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/export_devices.py)
 - [x] Its not possible to export the custom payload codecs. [-> Fixed](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/export_custom_codec.py) 
 
 
