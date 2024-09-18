@@ -2,6 +2,13 @@
 
 The **Milesight Gateway API** is a Python client that provides an interface for interacting with  Milesight Gateways through various REST API endpoints. It supports fetching device data, network server settings, packet forwarder information, profiles, payload codecs, and more.
 
+## This is a beta release!
+
+# ToDo:
+- [x] use all get endpoints
+- [ ] use post endpoints to write on gateways
+- [ ] IoT Developer Api
+
 # Requirements
 
 The Milesight Gateway firmware must be ```60.0.0.42-r5/56.0.0.4``` or higher. (from May 28, 2024 )
