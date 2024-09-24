@@ -1,5 +1,17 @@
 # Milesight Gateway API
 
+
+[![GitHub Release][release-shield]][release]
+[![pip Release][pip-release-shield]][pip-release]
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/Milesight-Gateway-API)
+[![License][license-shield]](LICENSE.md)
+
+![Supports aarch64 Architecture][aarch64-shield]
+![Supports amd64 Architecture][amd64-shield]
+![Supports armhf Architecture][armhf-shield]
+![Supports armv7 Architecture][armv7-shield]
+![Supports i386 Architecture][i386-shield]
+
 The **Milesight Gateway API** is a Python client that provides an interface for interacting with  Milesight Gateways through various REST API endpoints. 
 It supports fetching device data, network server settings, packet forwarder information, profiles, payload codecs, and more.
 
@@ -195,3 +207,14 @@ print(f"Search Results: {gateway_fleet_search}")
 # License
 
 This project is licensed under the MIT License. See the LICENSE file for more details.
+
+[aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg
+[amd64-shield]: https://img.shields.io/badge/amd64-yes-green.svg
+[armhf-shield]: https://img.shields.io/badge/armv7-yes-green.svg
+[armv7-shield]: https://img.shields.io/badge/armv7-yes-green.svg
+[i386-shield]: https://img.shields.io/badge/i386-no-red.svg
+[release-shield]: https://img.shields.io/github/v/release/corgan2222/Milesight-Gateway-API
+[release]:        https://github.com/corgan2222/Milesight-Gateway-API/releases
+[pip-release-shield]: https://img.shields.io/pypi/v/Milesight-Gateway-API
+[pip-release]:        https://pypi.org/project/Milesight-Gateway-API/
+[license-shield]: https://img.shields.io/github/license/corgan2222/Milesight-Gateway-API
