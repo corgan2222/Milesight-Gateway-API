@@ -49,6 +49,8 @@ To install the package from PyPI, simply run:
 pip install Milesight-Gateway-API
 ```
 
+[Milesight-Gateway-API on pypi.org](https://pypi.org/project/Milesight-Gateway-API/)
+
 # Features
 
 The MilesightGatewayClient class provides the following features:
@@ -64,7 +66,7 @@ The MilesightGatewayClient class provides the following features:
 
 # Usage
 
-See [/tests/test_client.py](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/tests/test_client.py) for the full picture.
+See [/tests/test_client.py](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/tests/test_client.py) how to use all functions.
 
 ## Basic Usage
 
@@ -187,6 +189,7 @@ print(f"Search Results: {gateway_fleet_search}")
 
 - [Test Rest API with Postman](https://support.milesight-iot.com/support/solutions/articles/73000514150-how-to-test-milesight-gateway-http-api-by-postman-)
 - [Milesight API Documentation](https://support.milesight-iot.com/helpdesk/attachments/73117065743)
+- [Milesight-Gateway-API on pypi.org](https://pypi.org/project/Milesight-Gateway-API/)
 
 
 # License
