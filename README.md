@@ -84,6 +84,7 @@ See [/tests/test_client.py](https://github.com/corgan2222/Milesight-Gateway-API/
 
 First, import the MilesightGatewayClient class and configure it with your credentials. 
 Ensure you have the required environment variables or load them from a .env file.
+You can copy .env_eample to [.env](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/.env_example) and change the IP, Username and Password.
 
 
 ```python
