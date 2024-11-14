@@ -84,10 +84,10 @@ def save_devices_to_csv(devices, file_path='export/devices_export.csv'):
                 device.get('appName', '-') if device.get('appName') else '-',         
                 device.get('payloadName', '-') if device.get('payloadName') else '-', 
                 device.get('fPort', '-') if device.get('fPort') else '-',             
-                device.get('appKey', '-') if device.get('appKey') else '-',           
-                device.get('devAddr', '-') if device.get('devAddr') else '-',         
-                device.get('nwkSKey', '-') if device.get('nwkSKey') else '-',         
-                device.get('appSKey', '-') if device.get('appSKey') else '-'          
+                device.get('appKey', '-') if device.get('appKey') else '-',1,"",""
+                # device.get('devAddr', '-') if device.get('devAddr') else '-',         
+                # device.get('nwkSKey', '-') if device.get('nwkSKey') else '-',         
+                # device.get('appSKey', '-') if device.get('appSKey') else '-'          
             ])
     
     print(f"Devices saved to {file_path} successfully.")
