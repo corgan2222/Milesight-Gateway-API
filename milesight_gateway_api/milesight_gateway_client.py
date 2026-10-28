@@ -109,10 +109,10 @@ class MilesightGatewayClient:
                     logging.debug(f"Fetched {len(devices)} devices (offset: {offset})")
             except ClientError as e:
                 logging.error(f"Client error occurred while fetching devices: {e}")
-                break
+                raise
             except Exception as e:
                 logging.error(f"Error fetching devices: {e}")
-                break
+                raise
 
         return all_devices, dev_total_count
 
@@ -173,10 +173,10 @@ class MilesightGatewayClient:
                     logging.debug(f"Fetched {len(applications)} applications (offset: {offset})")
             except ClientError as e:
                 logging.error(f"Client error occurred while fetching applications: {e}")
-                break
+                raise
             except Exception as e:
                 logging.error(f"Error fetching applications: {e}")
-                break
+                raise
 
         return all_applications, total_count
 
@@ -227,10 +227,10 @@ class MilesightGatewayClient:
                     logging.debug(f"Fetched {len(codecs)} codecs (offset: {offset}, search: {search})")
             except ClientError as e:
                 logging.error(f"Client error occurred while fetching payload codecs: {e}")
-                break
+                raise
             except Exception as e:
                 logging.error(f"Error fetching payload codecs: {e}")
-                break
+                raise
 
         return all_codecs, total_count
 
@@ -316,10 +316,10 @@ class MilesightGatewayClient:
                     logging.debug(f"Fetched {len(profiles)} profiles (offset: {offset}, profileID: {profile_id})")
             except ClientError as e:
                 logging.error(f"Client error occurred while fetching profiles: {e}")
-                break
+                raise
             except Exception as e:
                 logging.error(f"Error fetching profiles: {e}")
-                break
+                raise
 
         return all_profiles, total_count
 
