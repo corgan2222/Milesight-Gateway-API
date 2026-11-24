@@ -1,287 +1,167 @@
 # Milesight Gateway API
 
-
 [![GitHub Release][release-shield]][release]
-[![pip Release][pip-release-shield]][pip-release]
+[![PyPI][pip-release-shield]][pip-release]
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/Milesight-Gateway-API)
-[![License][license-shield]](LICENSE.md)
+[![License][license-shield]](LICENSE)
 
-![Supports aarch64 Architecture][aarch64-shield]
-![Supports amd64 Architecture][amd64-shield]
-![Supports armhf Architecture][armhf-shield]
-![Supports armv7 Architecture][armv7-shield]
-![Supports i386 Architecture][i386-shield]
+A Python client for Milesight LoRaWAN gateways (UG65, UG67 and their
+relatives). It talks to the gateway's local REST API and web interface, and
+decodes uplinks with Milesight's own codecs. The
+[Home Assistant integration](https://github.com/corgan2222/ha-milesight-gateway)
+is built on it.
 
-The **Milesight Gateway API** is a Python client that provides an interface for interacting with  Milesight Gateways through various REST API endpoints. 
-It supports fetching device data, network server settings, packet forwarder information, profiles, payload codecs, and more.
+- **Network server**: devices, applications, payload codecs, profiles, gateways of a fleet, packet log
+- **Downlinks**: queue a command for the gateway's codec, or raw bytes
+- **Web interface**: model, firmware, serial number, CPU, memory, storage, uptime
+- **Firmware**: the newest release from Milesight's download page
+- **Decoder** (extra): Milesight's decoders and encoders for 145 models, with a field catalog per model
+- **LoRaWAN connection** (Python 3.12+): a [lorawan-connection](https://pypi.org/project/lorawan-connection/) backend on top of the packet log
 
-## This is a beta release!
-
-Use at your own risk.
-
-# Why
-There are some feature missing in the original firmware from Milesight, which can become a problem, especially in large installations with several gateways.
-
-For example:
-- [x] Its not possible to export the device list. [-> Fixed](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/export_devices.py)
-- [x] Its not possible to export the custom payload codecs. [-> Fixed](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/export_custom_codec.py) 
-
-
-
-# ToDo:
-- [x] use all get endpoints
-- [x] send downlinks to devices
-- [ ] use post endpoints to write on gateways
-- [ ] IoT Developer Api
-- [ ] state engine to use this API for receiving the actuall sensor values. 
-
-# Requirements
-
-The Milesight Gateway firmware must be ```60.0.0.42-r5/56.0.0.4``` or higher. (from May 28, 2024 )
-
-
-## Table of Contents
-
-- [Installation](#installation)
-- [Features](#features)
-- [Usage](#usage)
-  - [Basic Usage](#basic-usage)
-  - [Getting JWT Token](#getting-jwt-token)
-  - [Fetching Devices](#fetching-devices)
-  - [Fetching Applications](#fetching-applications)
-  - [Fetching Payload Codecs](#fetching-payload-codecs)
-  - [Fetching Profiles](#fetching-profiles)
-  - [Fetching Gateway Fleet](#fetching-gateway-fleet)
-- [License](#license)
+It also covers what the gateway's own interface lacks on large installations,
+such as exporting the [device list](examples/export_devices.py), the
+[gateways](examples/export_gateways.py) or the
+[custom payload codecs](examples/export_custom_codec.py).
 
 ## Installation
 
-To install the package from PyPI, simply run:
-
 ```bash
-pip install Milesight-Gateway-API
+pip install Milesight-Gateway-API            # client
+pip install "Milesight-Gateway-API[decoder]" # client and decoder
 ```
 
-[Milesight-Gateway-API on pypi.org](https://pypi.org/project/Milesight-Gateway-API/)
+The gateway needs firmware `60.0.0.42-r5` or newer.
 
-# Features
+## Usage
 
-The MilesightGatewayClient class provides the following features:
-
-- Fetch Devices: Fetch devices and their details with pagination and search options.
-- Fetch Network Server Settings: Get network server settings from the Milesight Gateway.
-- Packet Forwarder Information: Retrieve information about the packet forwarder and connected servers.
-- Fetch Applications: Retrieve all applications with pagination.
-- Data Transmission Integration: Fetch integration details by ID and transmission type (HTTP or MQTT).
-- Fetch Payload Codecs: Fetch default or custom payload codecs with pagination and optional search.
-- Fetch Profiles: Fetch profiles for an organization and application, with optional profileID for specific content search.
-- Fetch Gateway Fleet: Retrieve gateway details with optional search by name or gateway ID.
-- Network Server Status: Gateways with their link state, applications, codec settings and the newest entries of the packet log, one request each.
-- Send Downlinks: Queue a command for a device; the gateway encodes it with the device's payload codec.
-- Web Interface: Read the gateway's model, firmware, serial number, CPU load, free memory and storage, and uptime.
-- Firmware: Find the newest gateway firmware on Milesight's download page.
-
-# Usage
-
-See [/tests/test_client.py](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/tests/test_client.py) how to use all functions.
-
-## Basic Usage
-
-First, import the MilesightGatewayClient class and configure it with your credentials. 
-Ensure you have the required environment variables or load them from a .env file.
-You can copy .env_eample to [.env](https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/.env_example) and change the IP, Username and Password.
-
+The client takes the gateway login and the AES Secret Key and IV from the
+gateway's security settings. Copy [examples/.env_example](examples/.env_example)
+to `.env` for the examples.
 
 ```python
-from milesight_gateway_api.milesight_gateway_client import MilesightGatewayClient
 import os
 from aiohttp import ClientSession
+from milesight_gateway_api import MilesightGatewayClient
 
-# Load environment variables (e.g., USERNAME, PASSWORD, etc.)
-username = os.getenv('USERNAME') # admin
-password = os.getenv('PASSWORD') # the WebUI Login Password
-secret_key = bytes(os.getenv('SECRET_KEY'), 'utf-8')
-iv = bytes(os.getenv('IV'), 'utf-8')
-base_url = os.getenv('BASE_URL')
-port = os.getenv('PORT')
+client = MilesightGatewayClient(
+    os.getenv("USERNAME"),
+    os.getenv("PASSWORD"),
+    os.getenv("SECRET_KEY").encode(),  # 16 characters
+    os.getenv("IV").encode(),          # 16 characters
+    os.getenv("BASE_URL"),             # https://192.0.2.10
+    os.getenv("PORT"),                 # 8080
+)
 
-client = MilesightGatewayClient(username, password, secret_key, iv, base_url, port)
-```
-
-## Getting JWT Token
-
-You must retrieve the JWT token before making other requests. Use the get_jwt_token method:
-
-```python
 async with ClientSession() as session:
-    jwt_token = await client.get_jwt_token(session)    
+    await client.get_jwt_token(session)                     # log in first
+    # One page above the device count gives a consistent list on a busy network.
+    devices, total = await client.get_all_devices(session, limit=10000)
+    device = await client.get_device(session, "24E1247140000001")
 ```
 
-## Fetching Devices
+### Network server
 
-You can fetch all devices with pagination or search for a specific device by providing the search parameter.
+| Call | Returns |
+| ---- | ------- |
+| `get_all_devices(session)`, `get_device(session, search)` | Devices, all or by name or devEUI |
+| `get_all_applications(session)`, `get_applications(session)` | Applications |
+| `get_data_transmission_integration(session, app_id, "mqtt")` | An application's MQTT or HTTP integration |
+| `get_payload_codecs(session, "default" \| "custom", search=...)` | Payload codecs |
+| `get_payload_codecs_by_device(session, dev_eui)` | The codec assigned to a device |
+| `get_profiles(session, organization_id, application_id)` | Device profiles |
+| `get_gateway_fleet(session, organization_id)`, `get_gateways(session)` | The gateways of a fleet with their link state |
+| `get_packets(session, limit)` | The newest entries of the packet log |
+| `get_network_server_settings(session)`, `get_packet_forwarder_info(session)` | Network server and packet forwarder |
 
-```python
-# Fetch all devices
-all_devices, devices_total_count = await client.get_all_devices(session)
-print(f"Total Devices: {devices_total_count}")
-print(all_devices)
-```
+### Downlinks
 
-## Search for a specific device
-```python
-search_device_string = "device_id_here"
-search_device = await client.get_device(session, search_device_string)
-print(f"Search Results for {search_device_string}:")
-print(search_device)
-```
-## Fetching Applications
-
-To fetch all applications:
-
-```python
-# Fetch all applications with pagination
-applications, total_applications = await client.get_all_applications(session)
-print(f"Total Applications: {total_applications}")
-print(applications)
-```
-
-## Fetching Payload Codecs
-
-You can fetch payload codecs by type (default or custom) with optional search functionality.
-
-```python
-# Fetch all default payload codecs
-payload_codecs, codecs_total_count = await client.get_payload_codecs(session, codec_type='default')
-print(f"Total Payload Codecs: {codecs_total_count}")
-print(payload_codecs)
-```
-
-## Search for a custom payload codec
-
-```python
-search_payload_codecs, codecs_total_count = await client.get_payload_codecs(session, codec_type='custom', search="custom_codec_name")
-print(f"Search Results: {search_payload_codecs}")
-```
-
-## Fetching Profiles
-
-You can fetch profiles for an organization and application, with an optional profile_id to search for specific profile content.
-
-```python
-# Fetch profiles
-organization_id = "1"
-application_id = "5"
-profiles, total_profiles = await client.get_profiles(session, organization_id, application_id)
-print(f"Total Profiles: {total_profiles}")
-print(profiles)
-```
-
-```python
-# Fetch specific profile by profileID
-profile_id = "your_profile_id"
-profiles_by_id, total_profiles = await client.get_profiles(session, organization_id, application_id, profile_id=profile_id)
-print(f"Profiles for profileID {profile_id}: {profiles_by_id}")
-```
-
-## Fetching Gateway Fleet
-
-Fetch the gateway fleet with optional search by gateway name or ID.
-
-```python
-# Fetch gateway fleet
-organization_id = "1"
-gateway_fleet, total_gateways = await client.get_gateway_fleet(session, organization_id)
-print(f"Total Gateways: {total_gateways}")
-print(gateway_fleet)
-```
-
-## Search for a gateway by name or ID
-
-```python
-gateway_fleet_search, total_gateways = await client.get_gateway_fleet(session, organization_id, search="gateway_name_or_id")
-print(f"Search Results: {gateway_fleet_search}")
-```
-
-## Sending a Downlink
-
-The gateway runs the device's assigned encoder over the command, so the keys
-are that encoder's vocabulary. The device picks the downlink up after its next
-uplink.
+The gateway runs the device's codec over the command, so the keys are that
+codec's vocabulary. The device picks the downlink up after its next uplink.
 
 ```python
 await client.enqueue_downlink(session, "24E1247140000001", {"report_interval": 10})
+await client.enqueue_raw_downlink(session, "24E1247140000001", bytes.fromhex("ff2800"), 85)
+queue = await client.get_downlink_queue(session, "24E1247140000001")
 ```
 
-## Reading the Web Interface
+### Web interface and firmware
 
-The web interface has its own session login with the same account. The client
-keeps the session and renews it when the gateway forgets it. After one refused
-login it does not try again, because the gateway locks an account after a few
-failed logins; it raises `WebLoginRefusedError` instead.
-
-```python
-info = await client.get_login_status(session)    # model, firmware ("rtver"); no login needed
-system = await client.get_system_info(session)   # sn, uptime, cpu_load, memory_avail_percent, ...
-```
-
-## Finding the Newest Firmware
+The web interface has its own session with the same account. After one refused
+login the client stops trying and raises `WebLoginRefusedError`, because the
+gateway locks an account after a few failed logins.
 
 ```python
 from milesight_gateway_api import get_latest_firmware
 
-release = await get_latest_firmware(session, "60")  # 60 is the UG65 and UG67 family
+info = await client.get_login_status(session)   # model, firmware; no login needed
+system = await client.get_system_info(session)  # serial, uptime, CPU, memory
+release = await get_latest_firmware(session, "60")  # 60: UG65 and UG67
 print(release.version, release.download_url)
 ```
 
-## Decoding Uplinks
+## Decoder
 
-The package bundles Milesight's own payload decoders for every model in
-[Milesight-IoT/codec](https://github.com/Milesight-IoT/codec) (MIT) and runs
-them with [dukpy](https://pypi.org/project/dukpy/), so raw uplink bytes decode
-exactly as on the gateway. Install the extra:
-
-```bash
-pip install "Milesight-Gateway-API[decoder]"
-```
+With the `decoder` extra, the package runs Milesight's own decoders and
+encoders from [Milesight-IoT/codec](https://github.com/Milesight-IoT/codec)
+(MIT) in an embedded JavaScript engine ([dukpy](https://pypi.org/project/dukpy/)),
+so raw bytes decode exactly as on the gateway. The scripts ship packed; a
+model's script is unpacked on first use.
 
 ```python
 from milesight_gateway_api import decoder
 
 decoder.decode("ws203", bytes.fromhex("01754003674400046871050000"))
 # {'battery': 64, 'temperature': 6.8, 'humidity': 56.5, 'occupancy': 0}
-decoder.models()["ws203"]["fields"]["occupancy"]   # type, unit, value names
-```
 
-Enumerations come back as raw numbers; the model's `fields` name them.
-`scripts/update_codecs.py` refreshes the bundle from Milesight's release branch.
+decoder.models()["ws203"]["fields"]["occupancy"]  # type, unit, access, value names
 
-Encoding takes the same vocabulary and returns the bytes for a downlink on
-FPort 85. Nested settings use dotted keys through `nest()`:
-
-```python
-decoder.encode("wt101", {"report_status": 1})                 # b'\xff\x28\x00'
+decoder.encode("wt101", {"report_status": 1})      # b'\xff\x28\x00', for FPort 85
 decoder.encode("wt101", decoder.nest({"temperature_control.enable": 0}))
 ```
 
-# Usefull Links
+Enumerations come back as raw numbers; the model's `fields` name them.
+`scripts/update_codecs.py` refreshes the bundle from Milesight's repository.
 
-- [Test Rest API with Postman](https://support.milesight-iot.com/support/solutions/articles/73000514150-how-to-test-milesight-gateway-http-api-by-postman-)
-- [Milesight API Documentation](https://support.milesight-iot.com/helpdesk/attachments/73117065743)
-- [Milesight-Gateway-API on pypi.org](https://pypi.org/project/Milesight-Gateway-API/)
+## LoRaWAN connection
 
+`milesight_gateway_api.lorawan` implements the lorawan-connection protocol on
+top of the network server's packet log: devices, uplinks with their gateway
+receptions, raw downlinks and the fleet's gateways. It needs Python 3.12 or
+newer and `pip install lorawan-connection`.
 
-# License
+```python
+from lorawan_connection import UplinkEvent
+from milesight_gateway_api.lorawan import MilesightConnection
 
-This project is licensed under the MIT License. See the LICENSE file for more details.
+connection = MilesightConnection(client, session, network_id="home")
+await connection.async_connect()
 
-[aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg
-[amd64-shield]: https://img.shields.io/badge/amd64-yes-green.svg
-[armhf-shield]: https://img.shields.io/badge/armv7-yes-green.svg
-[armv7-shield]: https://img.shields.io/badge/armv7-yes-green.svg
-[i386-shield]: https://img.shields.io/badge/i386-no-red.svg
+def listener(event):
+    if isinstance(event, UplinkEvent):
+        print(event.dev_eui, event.data.hex(), [rx.rssi for rx in event.receptions])
+
+unsubscribe = await connection.async_subscribe(listener=listener)
+gateways = await connection.async_get_gateways()
+...
+await connection.close()
+```
+
+`milesight_gateway_api.lorawan_devices` builds on it: devices that decode their
+uplinks with the bundled codecs and encode settings.
+
+## Links
+
+- [Milesight API documentation](https://support.milesight-iot.com/helpdesk/attachments/73117065743)
+- [Testing the gateway API with Postman](https://support.milesight-iot.com/support/solutions/articles/73000514150-how-to-test-milesight-gateway-http-api-by-postman-)
+- [Milesight-Gateway-API on PyPI](https://pypi.org/project/Milesight-Gateway-API/)
+
+## License
+
+MIT, see [LICENSE](LICENSE). The bundled codecs are Milesight's, under their
+own MIT license in `milesight_gateway_api/codecs/LICENSE`.
+
 [release-shield]: https://img.shields.io/github/v/release/corgan2222/Milesight-Gateway-API
-[release]:        https://github.com/corgan2222/Milesight-Gateway-API/releases
+[release]: https://github.com/corgan2222/Milesight-Gateway-API/releases
 [pip-release-shield]: https://img.shields.io/pypi/v/Milesight-Gateway-API
-[pip-release]:        https://pypi.org/project/Milesight-Gateway-API/
+[pip-release]: https://pypi.org/project/Milesight-Gateway-API/
 [license-shield]: https://img.shields.io/github/license/corgan2222/Milesight-Gateway-API
