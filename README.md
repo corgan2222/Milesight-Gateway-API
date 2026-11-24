@@ -234,6 +234,36 @@ release = await get_latest_firmware(session, "60")  # 60 is the UG65 and UG67 fa
 print(release.version, release.download_url)
 ```
 
+## Decoding Uplinks
+
+The package bundles Milesight's own payload decoders for every model in
+[Milesight-IoT/codec](https://github.com/Milesight-IoT/codec) (MIT) and runs
+them with [dukpy](https://pypi.org/project/dukpy/), so raw uplink bytes decode
+exactly as on the gateway. Install the extra:
+
+```bash
+pip install "Milesight-Gateway-API[decoder]"
+```
+
+```python
+from milesight_gateway_api import decoder
+
+decoder.decode("ws203", bytes.fromhex("01754003674400046871050000"))
+# {'battery': 64, 'temperature': 6.8, 'humidity': 56.5, 'occupancy': 0}
+decoder.models()["ws203"]["fields"]["occupancy"]   # type, unit, value names
+```
+
+Enumerations come back as raw numbers; the model's `fields` name them.
+`scripts/update_codecs.py` refreshes the bundle from Milesight's release branch.
+
+Encoding takes the same vocabulary and returns the bytes for a downlink on
+FPort 85. Nested settings use dotted keys through `nest()`:
+
+```python
+decoder.encode("wt101", {"report_status": 1})                 # b'\xff\x28\x00'
+decoder.encode("wt101", decoder.nest({"temperature_control.enable": 0}))
+```
+
 # Usefull Links
 
 - [Test Rest API with Postman](https://support.milesight-iot.com/support/solutions/articles/73000514150-how-to-test-milesight-gateway-http-api-by-postman-)
