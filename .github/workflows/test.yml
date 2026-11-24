@@ -4,8 +4,10 @@ on: [push, pull_request]
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # ubuntu-latest (26.04) no longer offers Python 3.9.
+    runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
         # The oldest and the newest Python that setup.py's python_requires covers.
         python-version: ["3.9", "3.13"]
