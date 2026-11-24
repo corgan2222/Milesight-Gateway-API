@@ -30,6 +30,7 @@ For example:
 
 # ToDo:
 - [x] use all get endpoints
+- [x] send downlinks to devices
 - [ ] use post endpoints to write on gateways
 - [ ] IoT Developer Api
 - [ ] state engine to use this API for receiving the actuall sensor values. 
@@ -75,6 +76,10 @@ The MilesightGatewayClient class provides the following features:
 - Fetch Payload Codecs: Fetch default or custom payload codecs with pagination and optional search.
 - Fetch Profiles: Fetch profiles for an organization and application, with optional profileID for specific content search.
 - Fetch Gateway Fleet: Retrieve gateway details with optional search by name or gateway ID.
+- Network Server Status: Gateways with their link state, applications, codec settings and the newest entries of the packet log, one request each.
+- Send Downlinks: Queue a command for a device; the gateway encodes it with the device's payload codec.
+- Web Interface: Read the gateway's model, firmware, serial number, CPU load, free memory and storage, and uptime.
+- Firmware: Find the newest gateway firmware on Milesight's download page.
 
 # Usage
 
@@ -196,6 +201,37 @@ print(gateway_fleet)
 ```python
 gateway_fleet_search, total_gateways = await client.get_gateway_fleet(session, organization_id, search="gateway_name_or_id")
 print(f"Search Results: {gateway_fleet_search}")
+```
+
+## Sending a Downlink
+
+The gateway runs the device's assigned encoder over the command, so the keys
+are that encoder's vocabulary. The device picks the downlink up after its next
+uplink.
+
+```python
+await client.enqueue_downlink(session, "24E1247140000001", {"report_interval": 10})
+```
+
+## Reading the Web Interface
+
+The web interface has its own session login with the same account. The client
+keeps the session and renews it when the gateway forgets it. After one refused
+login it does not try again, because the gateway locks an account after a few
+failed logins; it raises `WebLoginRefusedError` instead.
+
+```python
+info = await client.get_login_status(session)    # model, firmware ("rtver"); no login needed
+system = await client.get_system_info(session)   # sn, uptime, cpu_load, memory_avail_percent, ...
+```
+
+## Finding the Newest Firmware
+
+```python
+from milesight_gateway_api import get_latest_firmware
+
+release = await get_latest_firmware(session, "60")  # 60 is the UG65 and UG67 family
+print(release.version, release.download_url)
 ```
 
 # Usefull Links
