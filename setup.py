@@ -2,13 +2,16 @@ from setuptools import setup, find_packages
 
 setup(
     name="Milesight-Gateway-API",       
-    version="0.1.0",
+    version="0.2.0b1",
     packages=find_packages(),              # Automatically find your package
+    # Milesight's payload decoders (MIT) and their index.
+    package_data={"milesight_gateway_api": ["codecs/*"]},
     install_requires=[                     # Dependencies needed for your package
         "aiohttp",
         "pycryptodome",
         "urllib3",
     ],
+    extras_require={"decoder": ["dukpy>=0.6.0"]},
     author="Stefan Knaak",                    
     author_email="stefan.knaak@e-shelter.io", 
     description="A python client for interacting with Milesight gateway REST API",  
