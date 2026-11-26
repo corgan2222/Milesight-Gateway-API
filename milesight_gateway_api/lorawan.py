@@ -16,6 +16,7 @@ import base64
 import binascii
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +24,7 @@ from typing import Any
 
 from aiohttp import ClientError, ClientResponseError, ClientSession
 from lorawan_connection import (
+    AckEvent,
     AddedEvent,
     ConnectionUnavailable,
     DeviceDescriptor,
@@ -32,6 +34,7 @@ from lorawan_connection import (
     GatewayReception,
     RemovedEvent,
     StatusEvent,
+    TxAckEvent,
     Unsubscribe,
     UpdatedEvent,
     UplinkEvent,
@@ -54,6 +57,7 @@ MILESIGHT_EUI_PREFIX = "24e124"
 MILESIGHT_BRAND = "milesight-iot"
 # Suffixes the gateway's own codec copies carry after the model name.
 _CODEC_SUFFIXES = ("_esec", "_new")
+_CODEC_VERSION = re.compile(r"_v?\d+(\.\d+)+$")
 # One request for the whole list: paging by offset is no snapshot on a busy
 # network server, which reorders the list between two requests.
 _ALL_DEVICES = 10000
@@ -77,6 +81,19 @@ class InventoryEntry:
     wanted: bool
 
 
+# The network server's "status" of a device that reports: 3 is one that
+# stopped, past its timeout. "active" stays true for such a device.
+ONLINE_STATUS = 2
+
+
+def is_online(record: dict[str, Any]) -> bool:
+    """Tell whether the network server hears a device; "active" where it has no status."""
+    status = record.get("status")
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status == ONLINE_STATUS
+    return record.get("active") is True
+
+
 def identify(record: dict[str, Any]) -> tuple[str | None, str]:
     """
     Return the brand and model ID of a device record, as far as known.
@@ -96,6 +113,8 @@ def identify(record: dict[str, Any]) -> tuple[str | None, str]:
         if codec.endswith(suffix):
             codec = codec[: -len(suffix)]
             break
+    # A codec created from the library carries its version: "AM307L-1.5.72".
+    codec = _CODEC_VERSION.sub("", codec)
     if codec not in decoder.models():
         codec = decoder.model_for_eui(eui) or codec
     return MILESIGHT_BRAND, codec
@@ -188,6 +207,8 @@ class MilesightConnection:
         self._tasks: list[asyncio.Task[None]] = []
         self._lock = asyncio.Lock()
         self._seen: set[tuple[str, ...]] = set()
+        # Downlinks seen leaving the gateway: devEUI, counter, time.
+        self._transmitted: set[tuple[str, str, str]] = set()
         self._connecting = False
         self._closed = False
 
@@ -250,7 +271,7 @@ class MilesightConnection:
                 continue
             wanted = self._wanted(descriptor.dev_eui)
             inventory[descriptor.dev_eui] = InventoryEntry(
-                descriptor, active=record.get("active") is True, wanted=wanted
+                descriptor, active=is_online(record), wanted=wanted
             )
             if wanted:
                 snapshot[descriptor.dev_eui] = descriptor
@@ -329,7 +350,102 @@ class MilesightConnection:
 
     async def _prime_packets(self) -> None:
         """Mark what the log holds now as seen, so it is not replayed."""
-        self._seen = {self._key(p) for p in await self._read_packets()}
+        packets = await self._read_packets()
+        self._seen = {self._key(p) for p in packets}
+        self._transmitted = {
+            sent for sent in map(self._sent, packets) if sent is not None
+        }
+
+    def _acks(self, packets: list[dict[str, Any]]) -> list[AckEvent]:
+        """
+        Tell the ACKs of confirmed downlinks, from the packet log.
+
+        A confirmed downlink is logged as DnCnf with its frame counter; the
+        device's next uplink sets the ACK bit, logged as ack "true". The ACK
+        names the queue item as async_send_downlink did: devEUI and counter.
+        """
+        events: list[AckEvent] = []
+        last_down: dict[str, str] = {}
+        told: set[tuple[str, str]] = set()
+        for packet in sorted(packets, key=lambda p: str(p.get("time") or "")):
+            eui = str(packet.get("devEUI", "")).lower()
+            kind = str(packet.get("type", ""))
+            if kind == "DnCnf":
+                last_down[eui] = str(packet.get("fCnt"))
+            elif (
+                # The log repeats an acknowledging uplink as a row of type ACK.
+                (kind.startswith("Up") or kind == "ACK")
+                and str(packet.get("ack")).lower() == "true"
+                and self._key(packet) not in self._seen
+                and (eui, str(packet.get("fCnt"))) not in told
+            ):
+                try:
+                    received_at = datetime.fromisoformat(str(packet.get("time")))
+                except ValueError:
+                    continue
+                if received_at.tzinfo is None:
+                    continue
+                told.add((eui, str(packet.get("fCnt"))))
+                events.append(
+                    AckEvent(
+                        network_id=self.network_id,
+                        dev_eui=str(packet.get("devEUI")),
+                        received_at=received_at,
+                        queue_item_id=f"{eui}:{last_down.get(eui, 'queued')}",
+                        acknowledged=True,
+                    )
+                )
+        return events
+
+    @staticmethod
+    def _sent(packet: dict[str, Any]) -> tuple[str, str, str] | None:
+        """
+        Name a downlink that left the gateway; one still queued has no time.
+
+        A downlink without a payload carries the network server's own MAC
+        commands and is nobody's command.
+        """
+        if (
+            not str(packet.get("type", "")).startswith("Dn")
+            or not packet.get("time")
+            or not packet.get("payloadBase64")
+        ):
+            return None
+        return (
+            str(packet.get("devEUI", "")).lower(),
+            str(packet.get("fCnt")),
+            str(packet.get("time")),
+        )
+
+    def _transmissions(self, packets: list[dict[str, Any]]) -> list[TxAckEvent]:
+        """
+        Tell the downlinks that left the gateway since the last poll.
+
+        A Class A device takes a downlink right after one of its uplinks; the
+        ACK of a confirmed one only comes with the uplink after that.
+        """
+        events: list[TxAckEvent] = []
+        for packet in packets:
+            sent = self._sent(packet)
+            if sent is None or sent in self._transmitted:
+                continue
+            try:
+                received_at = datetime.fromisoformat(sent[2])
+                counter = int(packet.get("fCnt"))
+            except (TypeError, ValueError):
+                continue
+            if received_at.tzinfo is None:
+                continue
+            events.append(
+                TxAckEvent(
+                    network_id=self.network_id,
+                    dev_eui=str(packet.get("devEUI")),
+                    received_at=received_at,
+                    gateway_id=str(packet.get("gatewayMac") or ""),
+                    downlink_id=counter,
+                )
+            )
+        return events
 
     def _uplinks(
         self, packets: list[dict[str, Any]]
@@ -397,7 +513,19 @@ class MilesightConnection:
     async def poll_packets(self) -> None:
         """Deliver the uplinks the packet log gained since the last poll."""
         packets = await self._read_packets()
-        events = self._uplinks(packets)
+        # An ACK comes before the uplink that carries it, so a listener that
+        # counts uplinks after a downlink already knows it arrived.
+        events = sorted(
+            [
+                *self._acks(packets),
+                *self._transmissions(packets),
+                *self._uplinks(packets),
+            ],
+            key=lambda event: event.received_at,
+        )
+        self._transmitted = {
+            sent for sent in map(self._sent, packets) if sent is not None
+        }
         # ponytail: more than packet_window packets between two polls are
         # lost; shorten the interval or widen the window on a busy network.
         self._seen = {self._key(p) for p in packets}

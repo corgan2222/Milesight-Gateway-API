@@ -13,6 +13,10 @@ import logging
 from typing import Any, ClassVar
 
 from lorawan_connection import (
+    AckEvent,
+    Downlink,
+    DownlinkError,
+    TxAckEvent,
     Device,
     DeviceCollection,
     DeviceDescriptor,
@@ -48,9 +52,17 @@ class MilesightDevice(Device):
     # decoder.load() ran in a worker thread.
     wait_for_codec: ClassVar[bool] = False
 
+    # The network server's packet log reports ACKs of confirmed downlinks.
+    confirms: ClassVar[bool] = True
+
     def __init__(self, descriptor: DeviceDescriptor) -> None:
         """Start without values; they arrive with the first uplink."""
         super().__init__(descriptor)
+        # Counts the ACKs of confirmed downlinks; the newest one's outcome.
+        self.acks = 0
+        self.acknowledged: bool | None = None
+        # Counts the downlinks that left the gateway for this device.
+        self.transmissions = 0
         self._waiting: list[UplinkEvent] = []
         self.values: dict[str, Any] = {}
         self.last_decoded: dict[str, Any] = {}
@@ -102,6 +114,15 @@ class MilesightDevice(Device):
         uplink waits for codec_loaded(): unpacking reads a file, which an
         event loop must not do.
         """
+        if isinstance(event, AckEvent):
+            self.acks += 1
+            self.acknowledged = event.acknowledged
+            self.notify()
+            return
+        if isinstance(event, TxAckEvent):
+            self.transmissions += 1
+            self.notify()
+            return
         if not isinstance(event, UplinkEvent):
             return
         if self.wait_for_codec and not decoder.is_loaded(self.model_id):
@@ -148,16 +169,21 @@ class MilesightDevice(Device):
                     )
         return decoder.encode(self.model_id, decoder.nest(payload))
 
-    async def async_set(self, changes: dict[str, Any]) -> None:
+    async def async_set(
+        self, changes: dict[str, Any], *, confirmed: bool = False
+    ) -> None:
         """
         Send settings or commands; keep set values until the device reports.
 
         Milesight devices take downlinks on FPort 85 after their next uplink.
-        The send does not wait for an ACK: the Milesight network server
-        reports none.
+        The send does not wait for the device: a confirmed downlink's ACK
+        comes with a later uplink and counts in ``acks``.
         """
         data = self.encode(changes)
-        await self.async_send_downlink(data=data, f_port=85, wait_for_ack=False)
+        if confirmed:
+            await self._async_queue_confirmed(data)
+        else:
+            await self.async_send_downlink(data=data, f_port=85, wait_for_ack=False)
         stored = {
             key: value
             for key, value in changes.items()
@@ -166,6 +192,13 @@ class MilesightDevice(Device):
         if stored:
             self.values.update(stored)
             self.notify()
+
+    async def _async_queue_confirmed(self, data: bytes) -> None:
+        """Queue a confirmed downlink without waiting for its ACK."""
+        send = self._send_downlink
+        if self.closed or send is None:
+            raise DownlinkError("No downlink sender is configured")
+        await send(Downlink(self.descriptor.dev_eui, 85, data, confirmed=True))
 
 
 def _coerce(field: dict[str, Any], value: Any) -> Any:
