@@ -2,10 +2,20 @@
 from .exceptions import (
     MilesightGatewayError,
     UnexpectedResponseError,
+    WebConfigError,
     WebLoginRefusedError,
     WebSessionError,
 )
-from .firmware import FirmwareRelease, firmware_key, get_latest_firmware, parse_firmware_page
+from .firmware import (
+    FirmwareRelease,
+    download_firmware,
+    firmware_key,
+    get_firmware_releases,
+    get_latest_firmware,
+    next_firmware,
+    parse_firmware_page,
+    parse_firmware_releases,
+)
 from .milesight_gateway_client import MilesightGatewayClient
 
 __all__ = [
@@ -13,9 +23,14 @@ __all__ = [
     "MilesightGatewayClient",
     "MilesightGatewayError",
     "UnexpectedResponseError",
+    "WebConfigError",
     "WebLoginRefusedError",
     "WebSessionError",
+    "download_firmware",
     "firmware_key",
+    "get_firmware_releases",
     "get_latest_firmware",
+    "next_firmware",
     "parse_firmware_page",
+    "parse_firmware_releases",
 ]

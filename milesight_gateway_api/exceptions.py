@@ -9,6 +9,10 @@ class UnexpectedResponseError(MilesightGatewayError):
     """The gateway answered, but not in the shape its API documents."""
 
 
+class WebConfigError(MilesightGatewayError):
+    """The web interface refused a setting, or the values are not usable."""
+
+
 class WebSessionError(MilesightGatewayError):
     """The web interface dropped the session again right after a new login."""
 

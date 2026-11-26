@@ -99,6 +99,37 @@ release = await get_latest_firmware(session, "60")  # 60: UG65 and UG67
 print(release.version, release.download_url)
 ```
 
+### Wi-Fi and WireGuard
+
+Both are settings of the web interface. A call stores its values and applies
+them, like the page's Save and Apply buttons; `apply=False` only stores, and
+`apply_web_config()` then puts everything stored into effect at once.
+
+```python
+wifi = await client.get_wifi(session)                # enabled, mode, ssid, encryption, key
+await client.set_wifi_enabled(session, False)        # access point off
+await client.set_wifi_access_point(session, "Workshop", "a-long-key")  # WPA2, on
+
+interfaces = await client.get_wireguard(session)     # wg0 to wg2 as index 1 to 3
+print(interfaces[0]["public_key"])                   # for the server's peer entry
+await client.set_wireguard_interface(
+    session, 1, enable=True, address="10.0.0.2/24", apply=False
+)
+await client.set_wireguard_peer(
+    session, 1, "server", "<server public key>", ["10.0.0.0/24"],
+    endpoint="vpn.example.com", port=51820, keepalive=25, apply=False,
+)
+await client.apply_web_config(session)
+await client.remove_wireguard_peer(session, 1, "server")
+```
+
+`upgrade_firmware(session, image)` uploads a firmware image the way the
+Upgrade button does; the gateway installs it and reboots. `reset=True` also
+puts it back to factory settings.
+
+Keys come back in clear text from `get_wifi()` and `get_wireguard()`. A value
+the gateway refuses raises `WebConfigError`.
+
 ## Decoder
 
 With the `decoder` extra, the package runs Milesight's own decoders and
