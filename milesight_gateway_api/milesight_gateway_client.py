@@ -1,3 +1,5 @@
+"""Client for a Milesight gateway's REST API and web interface."""
+
 from __future__ import annotations
 
 import asyncio
@@ -51,7 +53,9 @@ WIREGUARD_INTERFACES = (1, 2, 3)
 def _wireguard_index(index):
     """Check the number of a WireGuard interface; the gateway has wg0 to wg2 as 1 to 3."""
     if index not in WIREGUARD_INTERFACES:
-        raise WebConfigError(f"WireGuard interface {index!r}; the gateway has {WIREGUARD_INTERFACES}")
+        raise WebConfigError(
+            f"WireGuard interface {index!r}; the gateway has {WIREGUARD_INTERFACES}"
+        )
     return index
 
 
@@ -111,6 +115,8 @@ def _summary_system(summary):
 
 
 class MilesightGatewayClient:
+    """Talks to one gateway: its network server API and its web interface."""
+
     def __init__(self, username, password, secret_key, iv, base_url, port):
         self.username = username
         self.password = password
@@ -129,10 +135,14 @@ class MilesightGatewayClient:
         self.url_endpoint_packet_forwarder = f"{self.api_url}/api/packet-forwarder/network-servers"
         self.url_endpoint_network_server_settings = f"{self.api_url}/api/network-server/settings"
         self.url_endpoint_applications = f"{self.api_url}/api/urapplications?organizationID=0"
-        self.url_endpoint_data_transmission_integration = f"{self.api_url}/api/urapplications/{{}}/integrations/{{}}"
+        self.url_endpoint_data_transmission_integration = (
+            f"{self.api_url}/api/urapplications/{{}}/integrations/{{}}"
+        )
         self.url_endpoint_get_payload_codecs = f"{self.api_url}/api/payloadcodecs"
         self.url_endpoint_get_payload_codecs_short = f"{self.api_url}/api/payloadcodecs-short"
-        self.url_endpoint_get_payload_codecs_by_device = f"{self.api_url}/api/payloadcodecs/{{}}/device"
+        self.url_endpoint_get_payload_codecs_by_device = (
+            f"{self.api_url}/api/payloadcodecs/{{}}/device"
+        )
         self.url_endpoint_get_payload_codecs_by_id = f"{self.api_url}/api/payloadcodecs/{{}}"
         self.url_endpoint_get_profiles = f"{self.api_url}/api/urprofiles"
         self.url_endpoint_get_gateway_fleet = f"{self.api_url}/api/gateways"
@@ -143,10 +153,11 @@ class MilesightGatewayClient:
         """Encrypts the password using AES."""
         try:
             cipher = AES.new(self.secret_key, AES.MODE_CBC, self.iv)
-            encrypted_password = cipher.encrypt(pad(plain_text_password.encode('utf-8'), AES.block_size))
+            padded = pad(plain_text_password.encode('utf-8'), AES.block_size)
+            encrypted_password = cipher.encrypt(padded)
             return base64.b64encode(encrypted_password).decode('utf-8')
         except Exception as e:
-            _LOGGER.debug(f"Error encrypting password: {e}")
+            _LOGGER.debug("Error encrypting password: %s", e)
             raise
 
     async def get_jwt_token(self, session: ClientSession):
@@ -159,7 +170,9 @@ class MilesightGatewayClient:
 
         try:
             headers = {'Content-Type': 'application/json'}
-            async with session.post(self.url_endpoint_token, json=payload, headers=headers, ssl=False) as response:
+            async with session.post(
+                self.url_endpoint_token, json=payload, headers=headers, ssl=False
+            ) as response:
                 response.raise_for_status()
                 data = await response.json()
                 self.jwt_token = data.get('jwt')
@@ -167,25 +180,27 @@ class MilesightGatewayClient:
                 _LOGGER.debug("Successfully retrieved JWT token")
                 return self.jwt_token
         except ClientError as e:
-            _LOGGER.debug(f"Client error occurred: {e}")
+            _LOGGER.debug("Client error occurred: %s", e)
             raise
         except Exception as e:
-            _LOGGER.debug(f"Error during JWT token retrieval: {e}")
+            _LOGGER.debug("Error during JWT token retrieval: %s", e)
             raise
 
     async def get_device(self, session: ClientSession, search: str):
         """Asynchronously fetches a device by search string."""
         try:
-            async with session.get(f'{self.url_endpoint_devices}?search={search}', headers=self.headers, ssl=False) as response:
+            async with session.get(
+                f'{self.url_endpoint_devices}?search={search}', headers=self.headers, ssl=False
+            ) as response:
                 response.raise_for_status()
                 data = await response.json()
-                _LOGGER.debug(f"Successfully retrieved device for search: {search}")
+                _LOGGER.debug("Successfully retrieved device for search: %s", search)
                 return data.get('deviceResult', [])
         except ClientError as e:
-            _LOGGER.debug(f"Client error occurred while fetching device: {e}")
+            _LOGGER.debug("Client error occurred while fetching device: %s", e)
             raise
         except Exception as e:
-            _LOGGER.debug(f"Error fetching device: {e}")
+            _LOGGER.debug("Error fetching device: %s", e)
             raise
 
     async def get_all_devices(self, session: ClientSession, limit=10):
@@ -204,7 +219,11 @@ class MilesightGatewayClient:
 
         while True:
             try:
-                async with session.get(f'{self.url_endpoint_devices}?offset={offset}&limit={limit}&applicationID=0', headers=self.headers, ssl=False) as response:
+                async with session.get(
+                    f'{self.url_endpoint_devices}?offset={offset}&limit={limit}&applicationID=0',
+                    headers=self.headers,
+                    ssl=False,
+                ) as response:
                     response.raise_for_status()
                     data = await response.json()
                     devices = data.get('deviceResult', [])
@@ -234,12 +253,12 @@ class MilesightGatewayClient:
                     elif len(devices) < limit:
                         break
 
-                    _LOGGER.debug(f"Fetched {len(devices)} devices (offset: {offset})")
+                    _LOGGER.debug("Fetched %s devices (offset: %s)", len(devices), offset)
             except ClientError as e:
-                _LOGGER.debug(f"Client error occurred while fetching devices: {e}")
+                _LOGGER.debug("Client error occurred while fetching devices: %s", e)
                 raise
             except Exception as e:
-                _LOGGER.debug(f"Error fetching devices: {e}")
+                _LOGGER.debug("Error fetching devices: %s", e)
                 raise
 
         return all_devices, dev_total_count
@@ -247,32 +266,38 @@ class MilesightGatewayClient:
     async def get_packet_forwarder_info(self, session: ClientSession):
         """Asynchronously fetches packet forwarder information from the gateway."""
         try:
-            async with session.get(self.url_endpoint_packet_forwarder, headers=self.headers, ssl=False) as response:
+            async with session.get(
+                self.url_endpoint_packet_forwarder, headers=self.headers, ssl=False
+            ) as response:
                 response.raise_for_status()
                 data = await response.json()
                 servs_count = len(data.get('servs', []))
-                _LOGGER.debug(f"Successfully retrieved packet forwarder info with {servs_count} servers.")
+                _LOGGER.debug(
+                    "Successfully retrieved packet forwarder info with %s servers.", servs_count
+                )
                 return data, servs_count
         except ClientError as e:
-            _LOGGER.debug(f"Client error occurred while fetching packet forwarder info: {e}")
+            _LOGGER.debug("Client error occurred while fetching packet forwarder info: %s", e)
             raise
         except Exception as e:
-            _LOGGER.debug(f"Error fetching packet forwarder info: {e}")
+            _LOGGER.debug("Error fetching packet forwarder info: %s", e)
             raise
 
     async def get_network_server_settings(self, session: ClientSession):
         """Asynchronously fetches network server settings from the gateway."""
         try:
-            async with session.get(self.url_endpoint_network_server_settings, headers=self.headers, ssl=False) as response:
+            async with session.get(
+                self.url_endpoint_network_server_settings, headers=self.headers, ssl=False
+            ) as response:
                 response.raise_for_status()
                 data = await response.json()
                 _LOGGER.debug("Successfully retrieved network server settings.")
                 return data
         except ClientError as e:
-            _LOGGER.debug(f"Client error occurred while fetching network server settings: {e}")
+            _LOGGER.debug("Client error occurred while fetching network server settings: %s", e)
             raise
         except Exception as e:
-            _LOGGER.debug(f"Error fetching network server settings: {e}")
+            _LOGGER.debug("Error fetching network server settings: %s", e)
             raise
 
     async def get_all_applications(self, session: ClientSession, limit=2):
@@ -283,7 +308,11 @@ class MilesightGatewayClient:
 
         while True:
             try:
-                async with session.get(f'{self.url_endpoint_applications}&offset={offset}&limit={limit}', headers=self.headers, ssl=False) as response:
+                async with session.get(
+                    f'{self.url_endpoint_applications}&offset={offset}&limit={limit}',
+                    headers=self.headers,
+                    ssl=False,
+                ) as response:
                     response.raise_for_status()
                     data = await response.json()
                     applications = data.get('result', [])
@@ -298,34 +327,47 @@ class MilesightGatewayClient:
                     if len(applications) < limit:
                         break
 
-                    _LOGGER.debug(f"Fetched {len(applications)} applications (offset: {offset})")
+                    _LOGGER.debug("Fetched %s applications (offset: %s)", len(applications), offset)
             except ClientError as e:
-                _LOGGER.debug(f"Client error occurred while fetching applications: {e}")
+                _LOGGER.debug("Client error occurred while fetching applications: %s", e)
                 raise
             except Exception as e:
-                _LOGGER.debug(f"Error fetching applications: {e}")
+                _LOGGER.debug("Error fetching applications: %s", e)
                 raise
 
         return all_applications, total_count
 
-    async def get_data_transmission_integration(self, session: ClientSession, app_id: str, data_transmission_type: str):
-        """Asynchronously fetches data transmission integration for a specific application and transmission type."""
+    async def get_data_transmission_integration(
+        self, session: ClientSession, app_id: str, data_transmission_type: str
+    ):
+        """Fetch the data transmission integration of an application for one type."""
         try:
-            url = self.url_endpoint_data_transmission_integration.format(app_id, data_transmission_type)
+            url = self.url_endpoint_data_transmission_integration.format(
+                app_id, data_transmission_type
+            )
             async with session.get(url, headers=self.headers, ssl=False) as response:
                 response.raise_for_status()
                 data = await response.json()
-                _LOGGER.debug(f"Successfully retrieved data transmission integration for app ID {app_id} and type {data_transmission_type}.")
+                _LOGGER.debug(
+                    "Successfully retrieved data transmission integration "
+                    "for app ID %s and type %s.",
+                    app_id,
+                    data_transmission_type,
+                )
                 return data
         except ClientError as e:
-            _LOGGER.debug(f"Client error occurred while fetching data transmission integration: {e}")
+            _LOGGER.debug(
+                "Client error occurred while fetching data transmission integration: %s", e
+            )
             raise
         except Exception as e:
-            _LOGGER.debug(f"Error fetching data transmission integration: {e}")
+            _LOGGER.debug("Error fetching data transmission integration: %s", e)
             raise
 
-    async def get_payload_codecs(self, session: ClientSession, codec_type: str, limit=10, search: str = None):
-        """Asynchronously fetches payload codecs using pagination with an optional search parameter."""
+    async def get_payload_codecs(
+        self, session: ClientSession, codec_type: str, limit=10, search: str = None
+    ):
+        """Fetch payload codecs page by page, optionally filtered by a search term."""
         offset = 0
         all_codecs = []
         total_count = 0
@@ -333,10 +375,13 @@ class MilesightGatewayClient:
         while True:
             try:
                 # Build the URL with optional search parameter
-                url = f'{self.url_endpoint_get_payload_codecs}?type={codec_type}&offset={offset}&limit={limit}'
+                url = (
+                    f'{self.url_endpoint_get_payload_codecs}?type={codec_type}'
+                    f'&offset={offset}&limit={limit}'
+                )
                 if search:
                     url += f'&search={search}'
-                
+
                 async with session.get(url, headers=self.headers, ssl=False) as response:
                     response.raise_for_status()
                     data = await response.json()
@@ -352,12 +397,14 @@ class MilesightGatewayClient:
                     if len(codecs) < limit:
                         break
 
-                    _LOGGER.debug(f"Fetched {len(codecs)} codecs (offset: {offset}, search: {search})")
+                    _LOGGER.debug(
+                        "Fetched %s codecs (offset: %s, search: %s)", len(codecs), offset, search
+                    )
             except ClientError as e:
-                _LOGGER.debug(f"Client error occurred while fetching payload codecs: {e}")
+                _LOGGER.debug("Client error occurred while fetching payload codecs: %s", e)
                 raise
             except Exception as e:
-                _LOGGER.debug(f"Error fetching payload codecs: {e}")
+                _LOGGER.debug("Error fetching payload codecs: %s", e)
                 raise
 
         return all_codecs, total_count
@@ -374,13 +421,17 @@ class MilesightGatewayClient:
                 codecs = data.get('result', [])
                 total_count = data.get('totalCount', 0)
 
-                _LOGGER.debug(f"Successfully retrieved {total_count} short payload codecs for type {codec_type}.")
+                _LOGGER.debug(
+                    "Successfully retrieved %s short payload codecs for type %s.",
+                    total_count,
+                    codec_type,
+                )
                 return codecs, total_count
         except ClientError as e:
-            _LOGGER.debug(f"Client error occurred while fetching payload codecs short: {e}")
+            _LOGGER.debug("Client error occurred while fetching payload codecs short: %s", e)
             raise
         except Exception as e:
-            _LOGGER.debug(f"Error fetching payload codecs short: {e}")
+            _LOGGER.debug("Error fetching payload codecs short: %s", e)
             raise
 
     async def get_payload_codecs_by_device(self, session: ClientSession, dev_eui: str):
@@ -390,13 +441,15 @@ class MilesightGatewayClient:
             async with session.get(url, headers=self.headers, ssl=False) as response:
                 response.raise_for_status()
                 data = await response.json()
-                _LOGGER.debug(f"Successfully retrieved payload codecs for device {dev_eui}.")
+                _LOGGER.debug("Successfully retrieved payload codecs for device %s.", dev_eui)
                 return data
         except ClientError as e:
-            _LOGGER.debug(f"Client error occurred while fetching payload codecs for device {dev_eui}: {e}")
+            _LOGGER.debug(
+                "Client error occurred while fetching payload codecs for device %s: %s", dev_eui, e
+            )
             raise
         except Exception as e:
-            _LOGGER.debug(f"Error fetching payload codecs for device {dev_eui}: {e}")
+            _LOGGER.debug("Error fetching payload codecs for device %s: %s", dev_eui, e)
             raise
 
     async def get_payload_codecs_by_id(self, session: ClientSession, codec_id: str):
@@ -406,16 +459,25 @@ class MilesightGatewayClient:
             async with session.get(url, headers=self.headers, ssl=False) as response:
                 response.raise_for_status()
                 data = await response.json()
-                _LOGGER.debug(f"Successfully retrieved payload codecs for ID {codec_id}.")
+                _LOGGER.debug("Successfully retrieved payload codecs for ID %s.", codec_id)
                 return data
         except ClientError as e:
-            _LOGGER.debug(f"Client error occurred while fetching payload codecs for ID {codec_id}: {e}")
+            _LOGGER.debug(
+                "Client error occurred while fetching payload codecs for ID %s: %s", codec_id, e
+            )
             raise
         except Exception as e:
-            _LOGGER.debug(f"Error fetching payload codecs for ID {codec_id}: {e}")
+            _LOGGER.debug("Error fetching payload codecs for ID %s: %s", codec_id, e)
             raise
 
-    async def get_profiles(self, session: ClientSession, organization_id: str, application_id: str = None, limit=10, profile_id: str = None):
+    async def get_profiles(
+        self,
+        session: ClientSession,
+        organization_id: str,
+        application_id: str = None,
+        limit=10,
+        profile_id: str = None,
+    ):
         """Asynchronously fetches profiles using pagination, of one application or all."""
         offset = 0
         all_profiles = []
@@ -423,12 +485,15 @@ class MilesightGatewayClient:
 
         while True:
             try:
-                url = f'{self.url_endpoint_get_profiles}?organizationID={organization_id}&offset={offset}&limit={limit}'
+                url = (
+                    f'{self.url_endpoint_get_profiles}?organizationID={organization_id}'
+                    f'&offset={offset}&limit={limit}'
+                )
                 if application_id:
                     url += f'&applicationID={application_id}'
                 if profile_id:
                     url += f'&profileID={profile_id}'
-                
+
                 async with session.get(url, headers=self.headers, ssl=False) as response:
                     response.raise_for_status()
                     data = await response.json()
@@ -444,39 +509,53 @@ class MilesightGatewayClient:
                     if len(profiles) < limit:
                         break
 
-                    _LOGGER.debug(f"Fetched {len(profiles)} profiles (offset: {offset}, profileID: {profile_id})")
+                    _LOGGER.debug(
+                        "Fetched %s profiles (offset: %s, profileID: %s)",
+                        len(profiles),
+                        offset,
+                        profile_id,
+                    )
             except ClientError as e:
-                _LOGGER.debug(f"Client error occurred while fetching profiles: {e}")
+                _LOGGER.debug("Client error occurred while fetching profiles: %s", e)
                 raise
             except Exception as e:
-                _LOGGER.debug(f"Error fetching profiles: {e}")
+                _LOGGER.debug("Error fetching profiles: %s", e)
                 raise
 
         return all_profiles, total_count
 
-    async def get_gateway_fleet(self, session: ClientSession, organization_id: str, search: str = None):
+    async def get_gateway_fleet(
+        self, session: ClientSession, organization_id: str, search: str = None
+    ):
         """Asynchronously fetches the gateway fleet with optional search by name or gateway ID."""
         offset = 0
         limit = 20
         try:
             # Build the URL with required organizationID and optional search
-            url = f'{self.url_endpoint_get_gateway_fleet}?organizationID={organization_id}&offset={offset}&limit={limit}'
+            url = (
+                f'{self.url_endpoint_get_gateway_fleet}?organizationID={organization_id}'
+                f'&offset={offset}&limit={limit}'
+            )
             if search:
                 url += f'&search={search}'
-            
+
             async with session.get(url, headers=self.headers, ssl=False) as response:
                 response.raise_for_status()
                 data = await response.json()
                 gateways = data.get('result', [])
-                total_count = data.get('totalCount', 0)                
+                total_count = data.get('totalCount', 0)
 
-                _LOGGER.debug(f"Successfully retrieved gateway fleet for organizationID {organization_id}, search: {search}.")                
+                _LOGGER.debug(
+                    "Successfully retrieved gateway fleet for organizationID %s, search: %s.",
+                    organization_id,
+                    search,
+                )
                 return gateways, total_count
         except ClientError as e:
-            _LOGGER.debug(f"Client error occurred while fetching gateway fleet: {e}")
+            _LOGGER.debug("Client error occurred while fetching gateway fleet: %s", e)
             raise
         except Exception as e:
-            _LOGGER.debug(f"Error fetching gateway fleet: {e}")
+            _LOGGER.debug("Error fetching gateway fleet: %s", e)
             raise
 
     # --- network server status ------------------------------------------------
@@ -663,7 +742,9 @@ class MilesightGatewayClient:
             raise UnexpectedResponseError(f"The web interface returned no {core} settings")
         return [block for block in blocks if isinstance(block, dict)]
 
-    async def _web_set(self, session: ClientSession, core: str, index: int, value: dict, apply: bool):
+    async def _web_set(
+        self, session: ClientSession, core: str, index: int, value: dict, apply: bool
+    ):
         """Store values of one block, and apply them unless told otherwise."""
         if not value:
             raise WebConfigError("Nothing to set")
@@ -683,7 +764,9 @@ class MilesightGatewayClient:
         """
         result = await self.web_query(session, "yruo_apply", "apply", [])
         if result.get("status") != 0:
-            raise WebConfigError(f"The gateway could not apply the settings: {result.get('result')}")
+            raise WebConfigError(
+                f"The gateway could not apply the settings: {result.get('result')}"
+            )
         try:
             return bool(result["result"][0].get("reboot"))
         except (KeyError, IndexError, TypeError, AttributeError):
@@ -732,7 +815,9 @@ class MilesightGatewayClient:
         SSID has at most 32 bytes, a WPA key 8 to 63 characters.
         """
         if encryption not in WIFI_ENCRYPTION:
-            raise WebConfigError(f"Unknown encryption {encryption!r}; one of {sorted(WIFI_ENCRYPTION)}")
+            raise WebConfigError(
+                f"Unknown encryption {encryption!r}; one of {sorted(WIFI_ENCRYPTION)}"
+            )
         if not ssid or len(ssid.encode("utf-8")) > 32:
             raise WebConfigError("An SSID has 1 to 32 bytes")
         settings = {
@@ -839,7 +924,9 @@ class MilesightGatewayClient:
             peer["keepalive"] = keepalive
         return await self._web_set(session, "yruo_wireguard", index, {"peers": [peer]}, apply)
 
-    async def remove_wireguard_peer(self, session: ClientSession, index: int, name: str, *, apply: bool = True):
+    async def remove_wireguard_peer(
+        self, session: ClientSession, index: int, name: str, *, apply: bool = True
+    ):
         """Remove the peer of that name from a WireGuard interface."""
         peer = {"name": name, "action": _PEER_REMOVE}
         return await self._web_set(

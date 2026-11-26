@@ -118,7 +118,9 @@ def next_firmware(
         steps = [
             r
             for r in newer
-            if firmware_key(target.requires) <= firmware_key(r.version) < firmware_key(target.version)
+            if firmware_key(target.requires)
+            <= firmware_key(r.version)
+            < firmware_key(target.version)
         ]
         if not steps:
             return None

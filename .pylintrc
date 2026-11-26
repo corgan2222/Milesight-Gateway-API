@@ -1,0 +1,21 @@
+[MAIN]
+# CI installs the package with its extras, so imports resolve.
+py-version=3.9
+
+[FORMAT]
+max-line-length=100
+max-module-lines=1200
+
+[DESIGN]
+# The client mirrors a REST API and a web interface: one method per call,
+# settings as keyword-only arguments. The defaults measure the gateway's API
+# rather than the code.
+max-args=12
+max-positional-arguments=6
+max-attributes=25
+max-public-methods=50
+max-locals=25
+
+[SIMILARITIES]
+# Tests build similar fake responses on purpose.
+min-similarity-lines=12

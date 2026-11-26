@@ -3,6 +3,11 @@
 Skipped where lorawan-connection is not installed; it needs Python 3.12.
 """
 
+# pytest idioms: fixtures as arguments, tests reach into internals and
+# import optional packages late, tables of gateway answers stay on one line.
+# pylint: disable=missing-function-docstring,redefined-outer-name,protected-access
+# pylint: disable=import-outside-toplevel,unused-argument,line-too-long
+
 import asyncio
 import base64
 
@@ -10,7 +15,7 @@ import pytest
 
 pytest.importorskip("lorawan_connection")
 
-# pylint: disable=wrong-import-position,import-error
+# pylint: disable=wrong-import-position,import-error,wrong-import-order
 from datetime import UTC, datetime
 
 from conftest import FakeResponse
@@ -633,8 +638,6 @@ async def test_repeated_poll_failures_disconnect_once(session):
 
 def test_a_downlink_without_a_payload_is_nobodys_command():
     """The network server's own MAC commands leave as downlinks too."""
-    from milesight_gateway_api.lorawan import MilesightConnection
-
     packet = {"devEUI": "24E1240000000001", "type": "DnUnc", "fCnt": 7, "time": "2026-11-26T13:23:20+01:00"}
     assert MilesightConnection._sent(packet | {"payloadBase64": ""}) is None
     assert MilesightConnection._sent(packet | {"payloadBase64": "/44AAgA="}) is not None
