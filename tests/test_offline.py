@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from aiohttp import ClientResponseError
+from aiohttp import ClientPayloadError, ClientResponseError, ServerDisconnectedError
 
 from milesight_gateway_api import (
     FirmwareRelease,
@@ -673,6 +673,59 @@ async def test_an_answer_that_is_no_backup_raises(session, body):
 
     with pytest.raises(WebConfigError, match="no backup"):
         await _client().download_backup(session)
+
+
+class _Cut(FakeResponse):
+    """A transfer that breaks off while the body arrives."""
+
+    async def read(self):
+        raise ClientPayloadError("Response payload is not completed")
+
+
+def _disconnected(_kwargs):
+    raise ServerDisconnectedError()
+
+
+async def test_every_web_interface_call_closes_its_connection(session):
+    """The gateway drops idle connections without telling; none may be pooled."""
+    session.routes[CGI] = _web(login={"status": 0, "result": [{"username": "admin", "td": "tok"}]})
+    session.routes[EXPORT] = FakeResponse(body=ARCHIVE)
+    session.routes[IMPORT] = FakeResponse({"size": 4, "checksum": "abcd"})
+    session.routes[("POST", f"{GATEWAY}/islogin")] = FakeResponse({"rtver": "60.0.0.51"})
+    client = _client()
+
+    await client.get_login_status(session)
+    await client.download_backup(session)
+    await client.upgrade_firmware(session, b"ELF")
+
+    assert [kwargs["headers"]["Connection"] for _, _, kwargs in session.calls] == ["close"] * 4
+
+
+async def test_a_cut_backup_transfer_is_tried_once_more(session):
+    session.routes[CGI] = _web()
+    answers = iter([_Cut(body=b""), FakeResponse(body=ARCHIVE)])
+    session.routes[EXPORT] = lambda _kwargs: next(answers)
+
+    assert await _client().download_backup(session) == ARCHIVE
+
+
+async def test_a_backup_cut_twice_raises(session):
+    session.routes[CGI] = _web()
+    session.routes[EXPORT] = _disconnected
+
+    with pytest.raises(ServerDisconnectedError):
+        await _client().download_backup(session)
+    assert [url for _, url, _ in session.calls].count(EXPORT[1]) == 2
+
+
+async def test_a_cut_upload_is_never_sent_again(session):
+    """The gateway may already be installing what arrived."""
+    session.routes[CGI] = _web()
+    session.routes[IMPORT] = _disconnected
+
+    with pytest.raises(ServerDisconnectedError):
+        await _client().upgrade_firmware(session, b"ELF")
+    assert [url for _, url, _ in session.calls].count(IMPORT[1]) == 1
 
 
 # --- firmware steps --------------------------------------------------------------

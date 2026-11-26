@@ -7,7 +7,7 @@ with open("README.md", encoding="utf-8") as readme:
 
 setup(
     name="Milesight-Gateway-API",
-    version="1.0.0",
+    version="1.0.1",
     packages=find_packages(),              # Automatically find your package
     # Milesight's payload decoders (MIT) and their index.
     package_data={"milesight_gateway_api": ["codecs/*"]},
