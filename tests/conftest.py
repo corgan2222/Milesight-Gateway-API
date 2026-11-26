@@ -1,5 +1,10 @@
 """A stand-in for aiohttp's ClientSession that answers from a route table."""
 
+# pytest idioms: fixtures as arguments, tests reach into internals and
+# import optional packages late, tables of gateway answers stay on one line.
+# pylint: disable=missing-function-docstring,redefined-outer-name,protected-access
+# pylint: disable=import-outside-toplevel,unused-argument,line-too-long
+
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock

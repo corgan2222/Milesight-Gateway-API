@@ -63,7 +63,8 @@ _CODEC_VERSION = re.compile(r"_v?\d+(\.\d+)+$")
 _ALL_DEVICES = 10000
 _MAX_FAILURES = 3
 
-Identify = Callable[[dict[str, Any]], tuple[str | None, str]]
+# Evaluated at import, which is fine: this module needs Python 3.12.
+Identify = Callable[[dict[str, Any]], tuple[str | None, str]]  # pylint: disable=unsupported-binary-operation
 
 
 class AuthenticationError(Exception):
@@ -599,7 +600,7 @@ class MilesightConnection:
                     _MAX_FAILURES,
                     error,
                 )
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001  # pylint: disable=broad-exception-caught
                 self._failed(error)
                 return
             else:

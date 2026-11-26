@@ -3,6 +3,11 @@
 Skipped where dukpy is not installed.
 """
 
+# pytest idioms: fixtures as arguments, tests reach into internals and
+# import optional packages late, tables of gateway answers stay on one line.
+# pylint: disable=missing-function-docstring,redefined-outer-name,protected-access
+# pylint: disable=import-outside-toplevel,unused-argument,line-too-long
+
 import pytest
 
 from milesight_gateway_api import decoder

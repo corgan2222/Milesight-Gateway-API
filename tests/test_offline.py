@@ -1,5 +1,10 @@
 """Offline tests: the gateway is replaced by a session that answers from a table."""
 
+# pytest idioms: fixtures as arguments, tests reach into internals and
+# import optional packages late, tables of gateway answers stay on one line.
+# pylint: disable=missing-function-docstring,redefined-outer-name,protected-access
+# pylint: disable=import-outside-toplevel,unused-argument,line-too-long
+
 import json
 import subprocess
 import sys
@@ -21,7 +26,7 @@ from milesight_gateway_api import (
 )
 from milesight_gateway_api.firmware import FIRMWARE_PAGE_URL
 
-from conftest import FakeResponse  # pylint: disable=import-error
+from conftest import FakeResponse  # pylint: disable=import-error,wrong-import-order
 
 GATEWAY = "http://192.0.2.10"
 API = f"{GATEWAY}:8080"

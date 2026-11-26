@@ -1,4 +1,5 @@
-# milesight_gateway_api/__init__.py
+"""Client, decoder and LoRaWAN connection for Milesight LoRaWAN gateways."""
+
 from .exceptions import (
     MilesightGatewayError,
     UnexpectedResponseError,
