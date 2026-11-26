@@ -76,6 +76,20 @@ async def test_system_info_is_read_behind_the_web_login(session):
     # The password goes out AES-encrypted, never in clear text.
     assert credentials["password"] not in ("", "secret")
     assert summary["headers"]["Cookie"] == "session=abc"
+    assert "Authorization" not in summary["headers"]
+
+
+async def test_the_web_session_token_goes_out_as_bearer(session):
+    """From 60.0.0.51 the login's username and td are the session, as a bearer."""
+    session.routes[CGI] = _web(
+        login={"status": 0, "result": [{"username": "admin", "td": "f00d"}]}
+    )
+
+    assert await _client().get_system_info(session) == SYSTEM
+
+    summary = session.calls[1][2]
+    assert summary["headers"]["Authorization"] == "Bearer login=admin;f00d"
+    assert summary["headers"]["Cookie"] == "session=abc"
 
 
 async def test_the_web_session_is_kept(session):
@@ -397,6 +411,14 @@ def test_an_entry_without_notes_or_links_still_counts():
     assert release is not None
     assert release.version == "63.0.0.2-r2"
     assert release.notes is None
+
+
+def test_cameras_and_sensors_of_the_same_family_are_skipped():
+    """A camera and a sensor also use 63, but only the UG63 is a gateway."""
+    release = parse_firmware_page(PAGE, "63")
+
+    assert release is not None
+    assert release.title.startswith("UG63")
 
 
 @pytest.mark.parametrize("page", [PAGE, "", "<html>redesigned</html>"])

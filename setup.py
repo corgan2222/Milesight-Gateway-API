@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="Milesight-Gateway-API",       
-    version="0.2.0b1",
+    version="0.2.0b2",
     packages=find_packages(),              # Automatically find your package
     # Milesight's payload decoders (MIT) and their index.
     package_data={"milesight_gateway_api": ["codecs/*"]},

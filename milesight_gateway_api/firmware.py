@@ -45,7 +45,9 @@ def parse_firmware_page(page: str, family: str) -> Optional[FirmwareRelease]:
     Return the newest release of a firmware family from the download page.
 
     The family is the first part of the version (60 for UG65 and UG67), which
-    is more stable than the product titles the page lists it under.
+    is more stable than the product titles the page lists it under. Only
+    gateway entries count: cameras and sensors share family numbers, such as
+    63 for the UG63, a camera line and the VS121.
     """
     releases = []
     for block in page.split("<li ")[1:]:
@@ -54,6 +56,8 @@ def parse_firmware_page(page: str, family: str) -> Optional[FirmwareRelease]:
             r'class="version">\s*<p>\s*v?(\d+(?:\.\d+)+(?:-r\d+)?)\s*</p>', block
         )
         if not title or not version or version[1].split(".")[0] != family:
+            continue
+        if "Gateway" not in title[1]:
             continue
         release = re.search(r'class="release-note">\s*<a href="([^"]+)"', block)
         download = re.search(r'href="([^"]+\.bin)"', block)

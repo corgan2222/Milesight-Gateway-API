@@ -38,6 +38,26 @@ def _cgi_body(core, function, values):
     )
 
 
+def _web_session(cookie, login_result):
+    """
+    Return the headers that carry a web interface session.
+
+    Firmware up to 60.0.0.50 keeps the session in a cookie. From 60.0.0.51 on
+    the gateway ignores the cookie and expects the login's username and "td"
+    as a bearer token, the way its own web pages send it. Both are sent, so
+    either firmware finds what it reads.
+    """
+    headers = {"Cookie": cookie} if cookie else {}
+    try:
+        first = login_result["result"][0]
+        username, td = first.get("username"), first.get("td")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        username = td = None
+    if username and td:
+        headers["Authorization"] = f"Bearer login={username};{td}"
+    return headers
+
+
 def _summary_system(summary):
     """Return the system block of a web interface status summary, or {}."""
     try:
@@ -62,7 +82,7 @@ class MilesightGatewayClient:
         self.base_url = base_url.rstrip("/")
         self.api_url = f"{self.base_url}:{port}"
         self.web_login_refused = False
-        self._web_cookie = None
+        self._web_session = None
         self._web_lock = None
         self.url_endpoint_token = f"{self.api_url}/api/internal/login"
         self.url_endpoint_devices = f"{self.api_url}/api/urdevices"
@@ -563,14 +583,14 @@ class MilesightGatewayClient:
             self._web_lock = asyncio.Lock()
         async with self._web_lock:
             for _ in range(2):
-                if self._web_cookie is None:
+                if self._web_session is None:
                     await self._web_login(session)
                 result = await self._cgi(
-                    session, _cgi_body(core, function, values), self._web_cookie
+                    session, _cgi_body(core, function, values), self._web_session
                 )
                 if result.get("status") != _CGI_NO_SESSION:
                     return result
-                self._web_cookie = None
+                self._web_session = None
         raise WebSessionError("Gateway web interface keeps dropping the session")
 
     async def _web_login(self, session: ClientSession):
@@ -597,11 +617,11 @@ class MilesightGatewayClient:
         if not isinstance(result, dict) or result.get("status") != 0:
             self.web_login_refused = True
             raise WebLoginRefusedError("Gateway refused the web interface login")
-        self._web_cookie = cookie
+        self._web_session = _web_session(cookie, result)
 
-    async def _cgi(self, session: ClientSession, body: str, cookie):
+    async def _cgi(self, session: ClientSession, body: str, web_session):
         """Post to the web interface's /cgi endpoint and return the answer."""
-        headers = {**_CGI_HEADERS, "Cookie": cookie} if cookie else _CGI_HEADERS
+        headers = {**_CGI_HEADERS, **web_session} if web_session else _CGI_HEADERS
         async with session.post(
             f"{self.base_url}/cgi",
             data=body,

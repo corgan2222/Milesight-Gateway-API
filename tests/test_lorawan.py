@@ -20,6 +20,7 @@ from lorawan_connection import (
     Downlink,
     DownlinkError,
     RemovedEvent,
+    StatusEvent,
     UplinkEvent,
 )
 
@@ -333,7 +334,65 @@ async def test_a_selection_limits_the_devices_and_their_uplinks(session):
 
     assert [e.dev_eui for e in events] == ["24e1247140000001"]
     assert sum(1 for _, url, _ in session.calls if "urdevices" in url) == reads
+    # The inventory still lists the one left out, for a network view.
+    assert {eui: entry.wanted for eui, entry in conn.inventory.items()} == {
+        "24e1247140000001": True,
+        "2cf7f12000000003": False,
+    }
     await conn.close()
+
+
+async def test_the_inventory_knows_which_devices_are_active(session):
+    """The network server's own active flag, for devices that stopped reporting."""
+    session.routes[LOGIN] = FakeResponse({"jwt": "a.jwt.token"})
+    session.routes[DEVICES] = _devices(
+        {**THERMOSTAT, "active": True}, {**FOREIGN, "active": False}
+    )
+    session.routes[PACKETS] = FakeResponse({"packets": []})
+    conn = MilesightConnection(
+        _client(), session, network_id="net", inventory_interval=3600, packet_interval=3600
+    )
+    await conn.async_connect()
+
+    assert {eui: entry.active for eui, entry in conn.inventory.items()} == {
+        "24e1247140000001": True,
+        "2cf7f12000000003": False,
+    }
+    await conn.close()
+
+
+@pytest.mark.parametrize(
+    ("decoded", "expected"),
+    [
+        ({"battery": 87, "temperature": 21}, 87.0),
+        ('{"battery": 55}', 55.0),
+        ({"battery": "40"}, 40.0),
+        ({"temperature": 21}, None),
+        ({"battery": 140}, None),
+        ({"battery": True}, None),
+        ("not json", None),
+        (None, None),
+    ],
+)
+async def test_a_battery_in_the_payload_becomes_a_status(
+    connection, session, decoded, expected
+):
+    """The codec's battery reaches LoRaWAN overviews as a device status."""
+    events = await _events(connection)
+    packet = {**_uplink(THERMOSTAT["devEUI"], 7, b"\x01\x75\x57"), "payloadJson": decoded}
+    session.routes[PACKETS] = FakeResponse({"packets": [packet]})
+
+    await connection.poll_packets()
+
+    statuses = [e for e in events if isinstance(e, StatusEvent)]
+    if expected is None:
+        assert statuses == []
+    else:
+        (status,) = statuses
+        assert status.battery_level == expected
+        assert status.battery_level_unavailable is False
+        # Right behind the uplink it came with.
+        assert isinstance(events[events.index(status) - 1], UplinkEvent)
 
 
 async def test_the_gateway_list_names_every_gateway(connection, session):

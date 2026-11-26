@@ -14,8 +14,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 import logging
 from collections.abc import Awaitable, Callable, Collection
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -29,6 +31,7 @@ from lorawan_connection import (
     DownlinkError,
     GatewayReception,
     RemovedEvent,
+    StatusEvent,
     Unsubscribe,
     UpdatedEvent,
     UplinkEvent,
@@ -61,6 +64,17 @@ Identify = Callable[[dict[str, Any]], tuple[str | None, str]]
 
 class AuthenticationError(Exception):
     """The gateway rejected the credentials."""
+
+
+@dataclass(frozen=True)
+class InventoryEntry:
+    """One device of the network server's list."""
+
+    descriptor: DeviceDescriptor
+    # The network server's own verdict: false once a device stopped reporting.
+    active: bool
+    # Inside the devices filter; only such a device gets events.
+    wanted: bool
 
 
 def identify(record: dict[str, Any]) -> tuple[str | None, str]:
@@ -100,6 +114,27 @@ def _float(value: Any) -> float | None:
         return None
 
 
+def _battery(packet: dict[str, Any]) -> float | None:
+    """
+    Return the battery percentage the gateway's codec decoded, or None.
+
+    payloadJson arrives as an object or as JSON text, depending on firmware.
+    """
+    decoded = packet.get("payloadJson")
+    if isinstance(decoded, str):
+        try:
+            decoded = json.loads(decoded)
+        except ValueError:
+            return None
+    if not isinstance(decoded, dict):
+        return None
+    value = decoded.get("battery")
+    if isinstance(value, bool):
+        return None
+    level = _float(value)
+    return level if level is not None and 0 <= level <= 100 else None
+
+
 class MilesightConnection:
     """
     One gateway's network server behind one subscription.
@@ -133,6 +168,10 @@ class MilesightConnection:
         self.network_id = network_id
         self._only = {eui.replace(":", "").lower() for eui in devices or ()}
         self.devices: dict[str, DeviceDescriptor] = {}
+        # Every device the network server lists, also those the devices
+        # filter leaves out, with whether the server counts it as active. A
+        # network view shows them; no event is ever sent for one left out.
+        self.inventory: dict[str, InventoryEntry] = {}
         # The newest uplink of each device, receptions included; a network
         # view reads it without subscribing.
         self.last_uplinks: dict[str, UplinkEvent] = {}
@@ -190,6 +229,7 @@ class MilesightConnection:
                 f"Incomplete device list: {len(records)} of {expected}"
             )
         snapshot: dict[str, DeviceDescriptor] = {}
+        inventory: dict[str, InventoryEntry] = {}
         for record in records:
             brand, model_id = self._identify(record)
             try:
@@ -208,8 +248,13 @@ class MilesightConnection:
             except ValueError:
                 # No usable devEUI: such a record cannot carry events.
                 continue
-            if self._wanted(descriptor.dev_eui):
+            wanted = self._wanted(descriptor.dev_eui)
+            inventory[descriptor.dev_eui] = InventoryEntry(
+                descriptor, active=record.get("active") is True, wanted=wanted
+            )
+            if wanted:
                 snapshot[descriptor.dev_eui] = descriptor
+        self.inventory = inventory
         return snapshot
 
     def _wanted(self, eui: str) -> bool:
@@ -286,8 +331,17 @@ class MilesightConnection:
         """Mark what the log holds now as seen, so it is not replayed."""
         self._seen = {self._key(p) for p in await self._read_packets()}
 
-    def _uplinks(self, packets: list[dict[str, Any]]) -> list[UplinkEvent]:
-        """Merge the receptions of each new uplink into one event."""
+    def _uplinks(
+        self, packets: list[dict[str, Any]]
+    ) -> list[UplinkEvent | StatusEvent]:
+        """
+        Merge the receptions of each new uplink into one event.
+
+        An uplink whose decoded payload carries a battery percentage is
+        followed by a status event with it. Milesight devices report their
+        battery in the payload, not in LoRaWAN's device status answer, and a
+        LoRaWAN overview reads the battery from the status.
+        """
         grouped: dict[tuple[str, ...], list[dict[str, Any]]] = {}
         for packet in packets:
             if not str(packet.get("type", "")).startswith("Up"):
@@ -295,7 +349,7 @@ class MilesightConnection:
             key = self._key(packet)
             if key not in self._seen:
                 grouped.setdefault(key, []).append(packet)
-        events = []
+        events: list[UplinkEvent | StatusEvent] = []
         for receptions in grouped.values():
             first = receptions[0]
             try:
@@ -327,6 +381,17 @@ class MilesightConnection:
                 )
             except ValueError:
                 continue
+            if (battery := _battery(first)) is not None:
+                events.append(
+                    StatusEvent(
+                        network_id=self.network_id,
+                        dev_eui=str(first.get("devEUI")),
+                        received_at=received_at,
+                        battery_level_unavailable=False,
+                        battery_level=battery,
+                    )
+                )
+        # Stable: a status stays right behind its uplink.
         return sorted(events, key=lambda event: event.received_at)
 
     async def poll_packets(self) -> None:
@@ -345,7 +410,8 @@ class MilesightConnection:
             await self.refresh()
         for event in events:
             if not self._closed and event.dev_eui in self.devices:
-                self.last_uplinks[event.dev_eui] = event
+                if isinstance(event, UplinkEvent):
+                    self.last_uplinks[event.dev_eui] = event
                 self._emit(event)
 
     # --- lifecycle ----------------------------------------------------------
