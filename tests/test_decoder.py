@@ -18,6 +18,22 @@ def test_the_catalog_lists_models_with_decoders_and_fields():
     assert models["em300_th"]["fields"]["temperature"]["unit"] == "°C"
 
 
+def test_a_time_unit_is_the_one_the_encoder_takes():
+    """codec.json says seconds for the WS203's intervals; its encoder reads minutes."""
+    fields = decoder.models()["ws203"]["fields"]
+    assert fields["report_interval"]["unit"] == "min"
+    assert fields["collection_interval"]["unit"] == "min"
+    # The encoder refuses what would be a plain value in seconds.
+    with pytest.raises(decoder.EncodeError, match="between 1 and 1440"):
+        decoder.encode("ws203", {"report_interval": 3600})
+
+
+def test_a_range_is_the_one_the_user_guide_documents():
+    """The VS321 takes 2 to 1440 min; its encoder would let 1 through."""
+    field = decoder.models()["vs321"]["fields"]["report_interval"]
+    assert (field["min"], field["max"]) == (2, 1440)
+
+
 # Upstream examples that belong to another model.
 FOREIGN_EXAMPLES = {"uc11_t1": "codec 1.5.72 ships the AM102 example"}
 
