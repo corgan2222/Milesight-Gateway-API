@@ -10,7 +10,11 @@ import secrets
 
 import urllib3
 from aiohttp import ClientSession, ClientTimeout, FormData
-from aiohttp.client_exceptions import ClientError
+from aiohttp.client_exceptions import (
+    ClientError,
+    ClientPayloadError,
+    ServerDisconnectedError,
+)
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
@@ -38,7 +42,14 @@ PACKET_LOG_SIZE = 1000
 # The /cgi answer when the gateway no longer knows the web session.
 _CGI_NO_SESSION = -2
 # The web interface posts JSON as a form body; the gateway expects exactly that.
-_CGI_HEADERS = {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}
+# The web interface drops an idle connection after a few seconds without
+# telling. A pooled one picked up later fails with "Server disconnected",
+# so every web interface call closes its connection when it is done.
+_CLOSE = {"Connection": "close"}
+_CGI_HEADERS = {
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    **_CLOSE,
+}
 
 
 # Wi-Fi settings as the web interface numbers them.
@@ -683,7 +694,7 @@ class MilesightGatewayClient:
         either.
         """
         async with session.post(
-            f"{self.base_url}/islogin", timeout=REQUEST_TIMEOUT, ssl=False
+            f"{self.base_url}/islogin", headers=_CLOSE, timeout=REQUEST_TIMEOUT, ssl=False
         ) as response:
             response.raise_for_status()
             data = await response.json(content_type=None)
@@ -946,19 +957,30 @@ class MilesightGatewayClient:
         async with self._web_lock:
             if self._web_session is None:
                 await self._web_login(session)
-            async with session.post(
-                f"{self.base_url}/cgi-bin/file-export",
-                data={"sessionid": self._web_token, "type": "backup", "file": "cfgbackup"},
-                headers=self._web_session,
-                timeout=UPLOAD_TIMEOUT,
-                ssl=False,
-            ) as response:
-                response.raise_for_status()
-                backup = await response.read()
+            for attempt in (1, 2):
+                try:
+                    backup = await self._export_backup(session)
+                    break
+                except (ClientPayloadError, ServerDisconnectedError):
+                    # Building the archive takes the gateway half a minute,
+                    # and a transfer can break off. It is only read, so once more.
+                    if attempt == 2:
+                        raise
         # A refusal comes as a short JSON object or a login page, not as a file.
         if len(backup) < _SMALLEST_BACKUP or backup.lstrip()[:1] in (b"{", b"<"):
             raise WebConfigError("The gateway returned no backup file")
         return backup
+
+    async def _export_backup(self, session: ClientSession) -> bytes:
+        async with session.post(
+            f"{self.base_url}/cgi-bin/file-export",
+            data={"sessionid": self._web_token, "type": "backup", "file": "cfgbackup"},
+            headers={**self._web_session, **_CLOSE},
+            timeout=UPLOAD_TIMEOUT,
+            ssl=False,
+        ) as response:
+            response.raise_for_status()
+            return await response.read()
 
     async def upgrade_firmware(self, session: ClientSession, image: bytes, *, reset: bool = False):
         """
@@ -990,7 +1012,8 @@ class MilesightGatewayClient:
             async with session.post(
                 f"{self.base_url}/cgi-bin/file-import",
                 data=form,
-                headers=self._web_session,
+                # Never retried: the gateway may be installing a cut-off upload.
+                headers={**self._web_session, **_CLOSE},
                 timeout=UPLOAD_TIMEOUT,
                 ssl=False,
             ) as response:
