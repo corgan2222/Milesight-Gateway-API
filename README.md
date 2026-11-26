@@ -2,8 +2,11 @@
 
 [![GitHub Release][release-shield]][release]
 [![PyPI][pip-release-shield]][pip-release]
-![PyPI - Python Version](https://img.shields.io/pypi/pyversions/Milesight-Gateway-API)
-[![License][license-shield]](LICENSE)
+[![Python versions][python-shield]][pip-release]
+[![Downloads][downloads-shield]][pip-release]
+[![Test][test-shield]][test]
+[![Pylint][pylint-shield]][pylint]
+[![License][license-shield]][license]
 
 A Python client for Milesight LoRaWAN gateways (UG65, UG67 and their
 relatives). It talks to the gateway's local REST API and web interface, and
@@ -13,15 +16,14 @@ is built on it.
 
 - **Network server**: devices, applications, payload codecs, profiles, gateways of a fleet, packet log
 - **Downlinks**: queue a command for the gateway's codec, or raw bytes
-- **Web interface**: model, firmware, serial number, CPU, memory, storage, uptime
-- **Firmware**: the newest release from Milesight's download page
+- **Web interface**: model, firmware, serial number, CPU, memory, storage, uptime; Wi-Fi and WireGuard settings
+- **Firmware**: releases from Milesight's download page, full backups and upgrades, including the version a release requires first
 - **Decoder** (extra): Milesight's decoders and encoders for 145 models, with a field catalog per model
 - **LoRaWAN connection** (Python 3.12+): a [lorawan-connection](https://pypi.org/project/lorawan-connection/) backend on top of the packet log
 
 It also covers what the gateway's own interface lacks on large installations,
-such as exporting the [device list](examples/export_devices.py), the
-[gateways](examples/export_gateways.py) or the
-[custom payload codecs](examples/export_custom_codec.py).
+such as exporting the [device list][example-devices], the
+[gateways][example-gateways] or the [custom payload codecs][example-codecs].
 
 ## Installation
 
@@ -30,13 +32,14 @@ pip install Milesight-Gateway-API            # client
 pip install "Milesight-Gateway-API[decoder]" # client and decoder
 ```
 
-The gateway needs firmware `60.0.0.42-r5` or newer.
+The client needs Python 3.9 or newer, the LoRaWAN connection Python 3.12. The
+gateway needs firmware `60.0.0.42-r5` or newer.
 
 ## Usage
 
 The client takes the gateway login and the AES Secret Key and IV from the
-gateway's security settings. Copy [examples/.env_example](examples/.env_example)
-to `.env` for the examples.
+gateway's security settings. Copy [examples/.env_example][example-env] to
+`.env` for the examples.
 
 ```python
 import os
@@ -84,20 +87,37 @@ await client.enqueue_raw_downlink(session, "24E1247140000001", bytes.fromhex("ff
 queue = await client.get_downlink_queue(session, "24E1247140000001")
 ```
 
-### Web interface and firmware
+### Web interface
 
 The web interface has its own session with the same account. After one refused
 login the client stops trying and raises `WebLoginRefusedError`, because the
 gateway locks an account after a few failed logins.
 
 ```python
-from milesight_gateway_api import get_latest_firmware
-
 info = await client.get_login_status(session)   # model, firmware; no login needed
 system = await client.get_system_info(session)  # serial, uptime, CPU, memory
-release = await get_latest_firmware(session, "60")  # 60: UG65 and UG67
-print(release.version, release.download_url)
 ```
+
+### Firmware
+
+Milesight's download page lists the releases of each product family. Some
+releases only install on a minimum version; `next_firmware()` names the release
+to install next on the way to the newest, which may be that minimum version.
+
+```python
+from milesight_gateway_api import download_firmware, get_firmware_releases, next_firmware
+
+releases = await get_firmware_releases(session, "60")  # 60: UG65 and UG67, oldest first
+step = next_firmware(info["rtver"], releases)          # None: nothing to install
+if step:
+    backup = await client.download_backup(session)     # full configuration, keep it
+    image = await download_firmware(session, step)
+    await client.upgrade_firmware(session, image)      # installs and reboots
+```
+
+`upgrade_firmware()` uploads the image the way the Upgrade button does; the
+gateway installs it and reboots, which takes a few minutes. `reset=True` also
+puts it back to factory settings. The backup holds keys and passwords.
 
 ### Wi-Fi and WireGuard
 
@@ -122,10 +142,6 @@ await client.set_wireguard_peer(
 await client.apply_web_config(session)
 await client.remove_wireguard_peer(session, 1, "server")
 ```
-
-`upgrade_firmware(session, image)` uploads a firmware image the way the
-Upgrade button does; the gateway installs it and reboots. `reset=True` also
-puts it back to factory settings.
 
 Keys come back in clear text from `get_wifi()` and `get_wireguard()`. A value
 the gateway refuses raises `WebConfigError`.
@@ -185,14 +201,28 @@ uplinks with the bundled codecs and encode settings.
 - [Milesight API documentation](https://support.milesight-iot.com/helpdesk/attachments/73117065743)
 - [Testing the gateway API with Postman](https://support.milesight-iot.com/support/solutions/articles/73000514150-how-to-test-milesight-gateway-http-api-by-postman-)
 - [Milesight-Gateway-API on PyPI](https://pypi.org/project/Milesight-Gateway-API/)
+- [Release notes][release]
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The bundled codecs are Milesight's, under their
-own MIT license in `milesight_gateway_api/codecs/LICENSE`.
+MIT, see [LICENSE][license]. The bundled codecs are Milesight's, under their
+own MIT license in [milesight_gateway_api/codecs/LICENSE][codecs-license].
 
+<!-- Absolute links: PyPI shows this README and cannot resolve relative ones. -->
 [release-shield]: https://img.shields.io/github/v/release/corgan2222/Milesight-Gateway-API
 [release]: https://github.com/corgan2222/Milesight-Gateway-API/releases
 [pip-release-shield]: https://img.shields.io/pypi/v/Milesight-Gateway-API
 [pip-release]: https://pypi.org/project/Milesight-Gateway-API/
+[python-shield]: https://img.shields.io/pypi/pyversions/Milesight-Gateway-API
+[downloads-shield]: https://img.shields.io/pypi/dm/Milesight-Gateway-API
+[test-shield]: https://github.com/corgan2222/Milesight-Gateway-API/actions/workflows/test.yml/badge.svg
+[test]: https://github.com/corgan2222/Milesight-Gateway-API/actions/workflows/test.yml
+[pylint-shield]: https://github.com/corgan2222/Milesight-Gateway-API/actions/workflows/pylint.yml/badge.svg
+[pylint]: https://github.com/corgan2222/Milesight-Gateway-API/actions/workflows/pylint.yml
 [license-shield]: https://img.shields.io/github/license/corgan2222/Milesight-Gateway-API
+[license]: https://github.com/corgan2222/Milesight-Gateway-API/blob/main/LICENSE
+[codecs-license]: https://github.com/corgan2222/Milesight-Gateway-API/blob/main/milesight_gateway_api/codecs/LICENSE
+[example-devices]: https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/export_devices.py
+[example-gateways]: https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/export_gateways.py
+[example-codecs]: https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/export_custom_codec.py
+[example-env]: https://github.com/corgan2222/Milesight-Gateway-API/blob/main/examples/.env_example

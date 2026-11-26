@@ -19,13 +19,33 @@ setup(
     extras_require={"decoder": ["dukpy>=0.6.0"]},
     author="Stefan Knaak",
     author_email="stefan.knaak@e-shelter.io",
-    description="A python client for interacting with Milesight gateway REST API",
+    description=(
+        "Client for Milesight LoRaWAN gateways: REST API, web interface, "
+        "firmware, payload codecs and a LoRaWAN connection"
+    ),
     long_description=LONG_DESCRIPTION,
     long_description_content_type="text/markdown",
     url="https://github.com/corgan2222/Milesight-Gateway-API",
+    project_urls={
+        "Source": "https://github.com/corgan2222/Milesight-Gateway-API",
+        "Issues": "https://github.com/corgan2222/Milesight-Gateway-API/issues",
+        "Release notes": "https://github.com/corgan2222/Milesight-Gateway-API/releases",
+        "Home Assistant integration": "https://github.com/corgan2222/ha-milesight-gateway",
+    },
+    keywords=["milesight", "lorawan", "gateway", "ug65", "ug67", "home-assistant"],
     classifiers=[
+        # The versions the Test workflow runs, and the ones between.
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",  # Use appropriate license
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: AsyncIO",
+        "Intended Audience :: Developers",
+        "Topic :: Home Automation",
+        "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
     python_requires='>=3.9',               # Minimum Python version requirement
