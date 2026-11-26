@@ -15,11 +15,14 @@ from datetime import UTC, datetime
 
 from conftest import FakeResponse
 from lorawan_connection import (
+    AckEvent,
+    TxAckEvent,
     AddedEvent,
     ConnectionUnavailable,
     Downlink,
     DownlinkError,
     RemovedEvent,
+    StatusEvent,
     UplinkEvent,
 )
 
@@ -28,6 +31,7 @@ from milesight_gateway_api.lorawan import (
     AuthenticationError,
     MilesightConnection,
     identify,
+    is_online,
 )
 
 GATEWAY = "http://192.0.2.10"
@@ -104,6 +108,10 @@ def test_milesight_devices_are_identified_by_eui_and_codec():
         "em300_sld",
     )
     assert identify(FOREIGN) == (None, "")
+    # A shared prefix (AM307, AM307L) needs the codec name, version and all.
+    am307l = {"devEUI": "24E124707E111005"}
+    for name in ("AM307L-1.5.72", "AM307L_v1.5.31", "AM307L-1.5.72_esec"):
+        assert identify({**am307l, "payloadName": name}) == ("milesight-iot", "am307l")
 
 
 def test_an_unknown_codec_name_falls_back_to_the_eui_prefix():
@@ -213,6 +221,102 @@ async def test_a_setting_goes_out_as_bytes_and_stays_until_reported():
 
     assert [(d.f_port, d.data.hex()) for d in sent] == [(85, "ffb1150000"), (85, "ff2800")]
     assert thermostat.values == {"target_temperature": 21}
+
+
+async def test_a_confirmed_setting_counts_its_ack():
+    """Queued confirmed, the ACK from the packet log counts on the device."""
+    thermostat = _device("wt101", "24E1247140000001")
+    sent = []
+
+    async def send(downlink):
+        sent.append(downlink)
+        return "24e1247140000001:7"
+
+    thermostat._send_downlink = send
+    await thermostat.async_set({"report_status": 1}, confirmed=True)
+    assert sent[0].confirmed is True
+    assert thermostat.acks == 0
+
+    thermostat._receive_event(
+        AckEvent(
+            network_id="net",
+            dev_eui="24e1247140000001",
+            received_at=datetime(2026, 11, 26, tzinfo=UTC),
+            queue_item_id="24e1247140000001:7",
+            acknowledged=True,
+        )
+    )
+    assert (thermostat.acks, thermostat.acknowledged) == (1, True)
+
+
+async def test_the_packet_log_tells_the_ack(connection, session):
+    """DnCnf names the counter; the next uplink's ACK bit answers it, first."""
+    events = await _events(connection)
+    eui = THERMOSTAT["devEUI"]
+    acked = {
+        **_uplink(eui, 3, b"\x01", time="2026-11-24T13:01:00+01:00"),
+        "ack": "true",
+    }
+    down = {
+        "devEUI": eui,
+        "fCnt": 7,
+        "type": "DnCnf",
+        "time": "2026-11-24T13:00:00+01:00",
+        "payloadBase64": "/yg=",
+    }
+    session.routes[PACKETS] = FakeResponse(
+        {"packets": [acked, down, _uplink(eui, 1, b"\x01")]}
+    )
+
+    await connection.poll_packets()
+    await connection.poll_packets()  # the same log again: no second ACK
+
+    news = [e for e in events if isinstance(e, (AckEvent, TxAckEvent, UplinkEvent))]
+    # The downlink left the gateway, then the next uplink acknowledged it.
+    assert [type(e) for e in news] == [TxAckEvent, AckEvent, UplinkEvent]
+    assert news[0].downlink_id == 7
+    assert news[1].queue_item_id == "24e1247140000001:7"
+
+
+async def test_an_ack_row_and_a_queued_downlink(connection, session):
+    """The log repeats an ACK as its own row; a downlink without a time is still queued."""
+    events = await _events(connection)
+    eui = THERMOSTAT["devEUI"]
+    acked = {
+        **_uplink(eui, 3, bytes([1]), time="2026-11-24T13:01:00+01:00"),
+        "ack": "true",
+    }
+    queued = {
+        "devEUI": eui,
+        "fCnt": 8,
+        "type": "DnCnf",
+        "time": "",
+        "payloadBase64": "/yg=",
+    }
+    session.routes[PACKETS] = FakeResponse(
+        {
+            "packets": [
+                {**acked, "type": "ACK"},
+                acked,
+                queued,
+                _uplink(eui, 1, bytes([1])),
+            ]
+        }
+    )
+
+    await connection.poll_packets()
+
+    assert len([e for e in events if isinstance(e, AckEvent)]) == 1
+    assert not [e for e in events if isinstance(e, TxAckEvent)]
+
+
+def test_online_follows_the_status_not_the_active_flag():
+    """A device that stopped reporting stays "active" but gets status 3."""
+    assert is_online({"active": True, "status": 2}) is True
+    assert is_online({"active": True, "status": 3}) is False
+    # Older firmware has no status.
+    assert is_online({"active": True}) is True
+    assert is_online({"active": False}) is False
 
 
 async def test_inventory_is_replayed_to_a_subscriber(connection):
@@ -333,7 +437,65 @@ async def test_a_selection_limits_the_devices_and_their_uplinks(session):
 
     assert [e.dev_eui for e in events] == ["24e1247140000001"]
     assert sum(1 for _, url, _ in session.calls if "urdevices" in url) == reads
+    # The inventory still lists the one left out, for a network view.
+    assert {eui: entry.wanted for eui, entry in conn.inventory.items()} == {
+        "24e1247140000001": True,
+        "2cf7f12000000003": False,
+    }
     await conn.close()
+
+
+async def test_the_inventory_knows_which_devices_are_active(session):
+    """The network server's own active flag, for devices that stopped reporting."""
+    session.routes[LOGIN] = FakeResponse({"jwt": "a.jwt.token"})
+    session.routes[DEVICES] = _devices(
+        {**THERMOSTAT, "active": True}, {**FOREIGN, "active": False}
+    )
+    session.routes[PACKETS] = FakeResponse({"packets": []})
+    conn = MilesightConnection(
+        _client(), session, network_id="net", inventory_interval=3600, packet_interval=3600
+    )
+    await conn.async_connect()
+
+    assert {eui: entry.active for eui, entry in conn.inventory.items()} == {
+        "24e1247140000001": True,
+        "2cf7f12000000003": False,
+    }
+    await conn.close()
+
+
+@pytest.mark.parametrize(
+    ("decoded", "expected"),
+    [
+        ({"battery": 87, "temperature": 21}, 87.0),
+        ('{"battery": 55}', 55.0),
+        ({"battery": "40"}, 40.0),
+        ({"temperature": 21}, None),
+        ({"battery": 140}, None),
+        ({"battery": True}, None),
+        ("not json", None),
+        (None, None),
+    ],
+)
+async def test_a_battery_in_the_payload_becomes_a_status(
+    connection, session, decoded, expected
+):
+    """The codec's battery reaches LoRaWAN overviews as a device status."""
+    events = await _events(connection)
+    packet = {**_uplink(THERMOSTAT["devEUI"], 7, b"\x01\x75\x57"), "payloadJson": decoded}
+    session.routes[PACKETS] = FakeResponse({"packets": [packet]})
+
+    await connection.poll_packets()
+
+    statuses = [e for e in events if isinstance(e, StatusEvent)]
+    if expected is None:
+        assert statuses == []
+    else:
+        (status,) = statuses
+        assert status.battery_level == expected
+        assert status.battery_level_unavailable is False
+        # Right behind the uplink it came with.
+        assert isinstance(events[events.index(status) - 1], UplinkEvent)
 
 
 async def test_the_gateway_list_names_every_gateway(connection, session):
@@ -467,3 +629,12 @@ async def test_repeated_poll_failures_disconnect_once(session):
     assert not conn.available
     await conn.close()
     await conn.close()  # harmless when repeated
+
+
+def test_a_downlink_without_a_payload_is_nobodys_command():
+    """The network server's own MAC commands leave as downlinks too."""
+    from milesight_gateway_api.lorawan import MilesightConnection
+
+    packet = {"devEUI": "24E1240000000001", "type": "DnUnc", "fCnt": 7, "time": "2026-11-26T13:23:20+01:00"}
+    assert MilesightConnection._sent(packet | {"payloadBase64": ""}) is None
+    assert MilesightConnection._sent(packet | {"payloadBase64": "/44AAgA="}) is not None

@@ -8,7 +8,7 @@ writes milesight_gateway_api/codecs/:
   repeat the same helper functions, so one solid xz archive takes 0.27 MB
   where the files take 6.5 MB (codec 1.5.72).
 - models.json.xz, a compact index of each model's fields taken from its
-  codec.json, with the value ranges the encoder documents.
+  codec.json, with the value ranges and time units the encoder documents.
 
 Run it from the repository root; it needs no extra package.
 """
@@ -32,6 +32,29 @@ INDEX = "vendors/milesight-iot/devices.json"
 _RANGE = re.compile(
     r"@param\s+\{number\}\s+([\w.]+)[^\n]*?range:\s*\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]"
 )
+# The same line names the unit the encoder takes. codec.json disagrees for some
+# fields (WS203: "s" for an interval the encoder reads in minutes), and the
+# encoder is what builds the bytes.
+_UNIT = re.compile(r"@param\s+\{number\}\s+([\w.]+)[^\n]*?unit:\s*([A-Za-z]+)")
+_TIME_UNITS = {
+    "us": "µs",
+    "ms": "ms",
+    "millisecond": "ms",
+    "s": "s",
+    "second": "s",
+    "seconds": "s",
+    "min": "min",
+    "minute": "min",
+    "h": "h",
+    "hour": "h",
+}
+
+# Ranges the user guide documents narrower than the encoder checks. The
+# device acknowledges a value outside them and keeps its old one.
+_DOCUMENTED_RANGES = {
+    # VS321 user guide, downlink "ff8e": 2-1440 min; the encoder allows 1.
+    ("vs321", "report_interval"): (2, 1440),
+}
 
 
 def _number(text: str) -> float | int | None:
@@ -76,6 +99,15 @@ def _ranges(encoder: str) -> dict[str, tuple]:
     return ranges
 
 
+def _units(encoder: str) -> dict[str, str]:
+    """Time units by field ID, as the encoder's JSDoc states them."""
+    units: dict[str, str] = {}
+    for name, word in _UNIT.findall(encoder):
+        if word.lower() in _TIME_UNITS:
+            units.setdefault(name, _TIME_UNITS[word.lower()])
+    return units
+
+
 def main() -> None:
     """Download the codec repository and rewrite the bundle."""
     with urllib.request.urlopen(SOURCE, timeout=120) as response:
@@ -102,12 +134,13 @@ def _write(archive: zipfile.ZipFile) -> None:
             continue
         name = Path(script).name
         scripts[name] = read(script)
-        encoder_name, ranges = "", {}
+        encoder_name, ranges, units = "", {}, {}
         if device.get("encoder_script"):
             encoder = read(device["encoder_script"])
             encoder_name = Path(device["encoder_script"]).name
             scripts[encoder_name] = encoder
             ranges = _ranges(encoder.decode("utf-8", "replace"))
+            units = _units(encoder.decode("utf-8", "replace"))
         codec: dict = {}
         if device.get("codec"):
             try:
@@ -120,6 +153,11 @@ def _write(archive: zipfile.ZipFile) -> None:
                 field = fields[obj["id"]] = _field(obj)
                 if obj["id"] in ranges:
                     field["min"], field["max"] = ranges[obj["id"]]
+                if obj["id"] in units and field["type"] == "NUMBER":
+                    field["unit"] = units[obj["id"]]
+                if (device["id"], obj["id"]) in _DOCUMENTED_RANGES:
+                    documented = _DOCUMENTED_RANGES[device["id"], obj["id"]]
+                    field["min"], field["max"] = documented
         models[device["id"]] = {
             "name": device.get("name", device["id"]),
             "description": device.get("description", ""),

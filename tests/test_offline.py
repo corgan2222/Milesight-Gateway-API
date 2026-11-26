@@ -12,6 +12,7 @@ from milesight_gateway_api import (
     FirmwareRelease,
     MilesightGatewayClient,
     UnexpectedResponseError,
+    WebConfigError,
     WebLoginRefusedError,
     WebSessionError,
     firmware_key,
@@ -75,6 +76,20 @@ async def test_system_info_is_read_behind_the_web_login(session):
     assert credentials["base"] == "web_login"
     # The password goes out AES-encrypted, never in clear text.
     assert credentials["password"] not in ("", "secret")
+    assert summary["headers"]["Cookie"] == "session=abc"
+    assert "Authorization" not in summary["headers"]
+
+
+async def test_the_web_session_token_goes_out_as_bearer(session):
+    """From 60.0.0.51 the login's username and td are the session, as a bearer."""
+    session.routes[CGI] = _web(
+        login={"status": 0, "result": [{"username": "admin", "td": "f00d"}]}
+    )
+
+    assert await _client().get_system_info(session) == SYSTEM
+
+    summary = session.calls[1][2]
+    assert summary["headers"]["Authorization"] == "Bearer login=admin;f00d"
     assert summary["headers"]["Cookie"] == "session=abc"
 
 
@@ -160,6 +175,16 @@ async def test_the_login_status_needs_no_session(session, payload, expected):
 
 
 # --- network server ----------------------------------------------------------
+
+
+async def test_one_gateway_of_the_fleet_is_read_by_its_id(session):
+    session.routes[("GET", f"{API}/api/gateways/24E124FFFE000001")] = FakeResponse(
+        {"mac": "24E124FFFE000001", "networkIP": "192.0.2.20"}
+    )
+
+    detail = await _client().get_gateway(session, "24E124FFFE000001")
+
+    assert detail["networkIP"] == "192.0.2.20"
 
 
 @pytest.mark.parametrize(
@@ -399,6 +424,14 @@ def test_an_entry_without_notes_or_links_still_counts():
     assert release.notes is None
 
 
+def test_cameras_and_sensors_of_the_same_family_are_skipped():
+    """A camera and a sensor also use 63, but only the UG63 is a gateway."""
+    release = parse_firmware_page(PAGE, "63")
+
+    assert release is not None
+    assert release.title.startswith("UG63")
+
+
 @pytest.mark.parametrize("page", [PAGE, "", "<html>redesigned</html>"])
 def test_an_unknown_family_has_no_release(page):
     """A family the page does not list, or a page without entries, gives None."""
@@ -421,3 +454,269 @@ async def test_an_unreachable_download_page_raises(session):
 
     with pytest.raises(ClientResponseError):
         await get_latest_firmware(session, "60")
+
+
+# --- administration through the web interface --------------------------------------
+
+WIFI = {"enabled": 0, "mode": 0, "ssid": "Gateway_000001", "encryption": 4, "key": "old-key-1"}
+WIFI_ANSWER = {"status": 0, "result": [{"get": [{"type": "yruo_wifi", "index": 0, "value": WIFI}]}]}
+PEER = {"id": "abc123", "name": "server", "public_key": "PUB=", "allowed_ips": ["10.0.0.0/24"]}
+WIREGUARD_ANSWER = {
+    "status": 0,
+    "result": [
+        {
+            "get": [
+                {"type": "yruo_wireguard", "index": 1, "value": {"name": "wg0", "enable": 1, "peers": [PEER]}},
+                {"type": "yruo_wireguard", "index": 2, "value": {"name": "wg1", "enable": 0, "peers": []}},
+            ]
+        }
+    ],
+}
+OK = {"status": 0, "result": [{}]}
+
+
+def _requests(session):
+    """Return each /cgi request after the login as (core, function, values)."""
+    bodies = [json.loads(kwargs["data"]) for _, _, kwargs in session.calls]
+    return [(b["core"], b["function"], b["values"]) for b in bodies if b["core"] != "user"]
+
+
+async def test_wifi_settings_are_read(session):
+    session.routes[CGI] = _web(WIFI_ANSWER)
+
+    assert await _client().get_wifi(session) == WIFI
+
+
+async def test_an_access_point_is_set_and_applied(session):
+    """SSID and key are stored, then applied like the web page's two buttons."""
+    session.routes[CGI] = _web(OK, OK)
+
+    await _client().set_wifi_access_point(session, "Workshop", "a-long-key")
+
+    stored, applied = _requests(session)
+    assert stored == (
+        "yruo_wifi",
+        "set",
+        [
+            {
+                "base": "yruo_wifi",
+                "index": 0,
+                "value": {"enabled": 1, "mode": 0, "ssid": "Workshop", "encryption": 4, "key": "a-long-key"},
+            }
+        ],
+    )
+    assert applied == ("yruo_apply", "apply", [])
+
+
+async def test_wifi_is_switched_off_without_applying(session):
+    session.routes[CGI] = _web(OK)
+
+    await _client().set_wifi_enabled(session, False, apply=False)
+
+    assert _requests(session) == [
+        ("yruo_wifi", "set", [{"base": "yruo_wifi", "index": 0, "value": {"enabled": 0}}])
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ssid", "key", "encryption"),
+    [("", "a-long-key", "wpa2_psk"), ("x" * 33, "a-long-key", "wpa2_psk"), ("Workshop", "short", "wpa2_psk"), ("Workshop", "", "wep")],
+)
+async def test_an_unusable_access_point_is_refused_before_it_goes_out(session, ssid, key, encryption):
+    with pytest.raises(WebConfigError):
+        await _client().set_wifi_access_point(session, ssid, key, encryption=encryption)
+    assert session.calls == []
+
+
+async def test_a_refused_setting_raises(session):
+    session.routes[CGI] = _web({"status": -1, "result": [-1, "invalid"]})
+
+    with pytest.raises(WebConfigError, match="refused"):
+        await _client().set_wifi_enabled(session, True)
+    # Nothing is applied after a refusal.
+    assert [core for core, _, _ in _requests(session)] == ["yruo_wifi"]
+
+
+async def test_wireguard_interfaces_are_read_with_their_index(session):
+    session.routes[CGI] = _web(WIREGUARD_ANSWER)
+
+    interfaces = await _client().get_wireguard(session)
+
+    assert [(i["index"], i["name"]) for i in interfaces] == [(1, "wg0"), (2, "wg1")]
+    assert interfaces[0]["peers"] == [PEER]
+
+
+async def test_a_wireguard_interface_gets_only_the_given_fields(session):
+    session.routes[CGI] = _web(OK, OK)
+
+    await _client().set_wireguard_interface(session, 1, enable=True, address="10.0.0.2/24", private_key="PRIV=")
+
+    (_, _, values), _apply = _requests(session)
+    assert values == [
+        {
+            "base": "yruo_wireguard",
+            "index": 1,
+            "value": {"enable": 1, "custom_private_key": 1, "private_key": "PRIV=", "address": "10.0.0.2/24"},
+        }
+    ]
+
+
+async def test_a_new_peer_is_added_and_a_known_one_replaced(session):
+    """The gateway tells them apart by an action; a known peer keeps its ID."""
+    session.routes[CGI] = _web(WIREGUARD_ANSWER, OK, WIREGUARD_ANSWER, OK)
+    client = _client()
+
+    await client.set_wireguard_peer(session, 1, "office", "KEY=", ["10.1.0.0/24"], endpoint="vpn.example.com", port=51820, apply=False)
+    await client.set_wireguard_peer(session, 1, "server", "NEW=", ["10.0.0.0/24"], apply=False)
+
+    _get, (_, _, added), _get2, (_, _, edited) = _requests(session)
+    new = added[0]["value"]["peers"][0]
+    assert (new["action"], new["name"], new["endpoint"], new["port"]) == (1, "office", "vpn.example.com", 51820)
+    assert new["id"]
+    old = edited[0]["value"]["peers"][0]
+    assert (old["action"], old["id"], old["public_key"]) == (2, "abc123", "NEW=")
+
+
+async def test_a_peer_is_removed_by_name(session):
+    session.routes[CGI] = _web(OK)
+
+    await _client().remove_wireguard_peer(session, 2, "server", apply=False)
+
+    assert _requests(session) == [
+        ("yruo_wireguard", "set", [{"base": "yruo_wireguard", "index": 2, "value": {"peers": [{"name": "server", "action": 3}]}}])
+    ]
+
+
+async def test_the_gateway_has_three_wireguard_interfaces(session):
+    with pytest.raises(WebConfigError):
+        await _client().set_wireguard_interface(session, 4, enable=True)
+
+
+# --- firmware upgrade ------------------------------------------------------------
+
+IMPORT = ("POST", f"{GATEWAY}/cgi-bin/file-import")
+
+
+def _fields(form):
+    """Return a FormData's fields as name -> value."""
+    return {options["name"]: value for options, _headers, value in form._fields}  # pylint: disable=protected-access
+
+
+async def test_a_firmware_image_is_uploaded_like_the_upgrade_button(session):
+    """Behind the web login, as the form the page posts: size, kind and the file."""
+    session.routes[CGI] = _web(login={"status": 0, "result": [{"username": "admin", "td": "tok"}]})
+    session.routes[IMPORT] = FakeResponse({"size": 4, "checksum": "abcd", "filename": "firmware.bin"})
+
+    result = await _client().upgrade_firmware(session, b"\x7fELF")
+
+    assert result["checksum"] == "abcd"
+    _login, (_, _, upload) = session.calls
+    assert upload["headers"]["Cookie"] == "session=abc"
+    fields = _fields(upload["data"])
+    assert fields["size"] == "4"
+    assert fields["filename"] == "type=upgrade&file=firmware.bin"
+    # Older firmware reads the session from the form, not from the cookie.
+    assert fields["sessionid"] == "tok"
+    assert fields["file"] == b"\x7fELF"
+
+
+async def test_a_reset_with_the_upgrade_has_to_be_asked_for(session):
+    session.routes[CGI] = _web()
+    session.routes[IMPORT] = FakeResponse({"size": 1, "checksum": "x"})
+
+    await _client().upgrade_firmware(session, b"x", reset=True)
+
+    assert _fields(session.calls[-1][2]["data"])["filename"] == "type=upgrade_with_reset&file=firmware.bin"
+
+
+async def test_a_refused_firmware_image_raises(session):
+    session.routes[CGI] = _web()
+    session.routes[IMPORT] = FakeResponse({"message": 2})
+
+    with pytest.raises(WebConfigError, match="refused the firmware"):
+        await _client().upgrade_firmware(session, b"not firmware")
+
+
+async def test_an_empty_firmware_image_never_goes_out(session):
+    with pytest.raises(WebConfigError):
+        await _client().upgrade_firmware(session, b"")
+    assert session.calls == []
+
+
+# --- backup ----------------------------------------------------------------------
+
+EXPORT = ("POST", f"{GATEWAY}/cgi-bin/file-export")
+ARCHIVE = bytes([0x1F, 0x8B]) + bytes(2000)
+
+
+async def test_the_full_backup_is_downloaded_like_the_button_saves_it(session):
+    """The form the page posts: the session token, and which file."""
+    session.routes[CGI] = _web(login={"status": 0, "result": [{"username": "admin", "td": "tok"}]})
+    session.routes[EXPORT] = FakeResponse(body=ARCHIVE)
+
+    assert await _client().download_backup(session) == ARCHIVE
+
+    _login, (_, _, export) = session.calls
+    assert export["data"] == {"sessionid": "tok", "type": "backup", "file": "cfgbackup"}
+    assert export["headers"]["Authorization"] == "Bearer login=admin;tok"
+
+
+@pytest.mark.parametrize("body", [b"", b'{"status": -2}', b"<html>login</html>" + bytes(2000)])
+async def test_an_answer_that_is_no_backup_raises(session, body):
+    session.routes[CGI] = _web()
+    session.routes[EXPORT] = FakeResponse(body=body)
+
+    with pytest.raises(WebConfigError, match="no backup"):
+        await _client().download_backup(session)
+
+
+# --- firmware steps --------------------------------------------------------------
+
+
+def _release(version, requires=None):
+    return FirmwareRelease(version, "UG65", None, f"https://example.com/{version}.bin", requires=requires)
+
+
+def test_the_page_lists_the_release_an_older_gateway_installs_first():
+    """Milesight keeps 60.0.0.45 next to the newest for exactly that."""
+    from milesight_gateway_api import parse_firmware_releases
+
+    versions = [r.version for r in parse_firmware_releases(PAGE, "60")]
+
+    assert versions == sorted(versions, key=firmware_key)
+    assert "60.0.0.45" in versions
+    assert len(versions) > 1
+
+
+@pytest.mark.parametrize(
+    ("installed", "expected"),
+    [
+        ("60.0.0.44", "60.0.0.45"),  # the newest needs 60.0.0.45 first
+        ("60.0.0.45", "60.0.0.51"),
+        ("60.0.0.48-r3", "60.0.0.51"),
+        ("60.0.0.51", None),
+    ],
+)
+def test_the_next_step_respects_the_minimum_version(installed, expected):
+    from milesight_gateway_api import next_firmware
+
+    releases = [_release("60.0.0.45"), _release("60.0.0.51", requires="60.0.0.45")]
+
+    step = next_firmware(installed, releases)
+
+    assert (step.version if step else None) == expected
+
+
+def test_a_needed_step_the_page_does_not_offer_blocks_the_upgrade():
+    from milesight_gateway_api import next_firmware
+
+    assert next_firmware("60.0.0.44", [_release("60.0.0.51", requires="60.0.0.45")]) is None
+
+
+def test_the_minimum_version_is_read_from_the_notes():
+    from milesight_gateway_api.firmware import _requires
+
+    notes = "2. Before upgrading to this version, ensure that your gateway is updated to v60.0.0.45 or later; otherwise it fails."
+    assert _requires(notes) == "60.0.0.45"
+    assert _requires("ensure that your gateway is updated to version 56.0.0.5 or later") == "56.0.0.5"
+    assert _requires("Please reset the gateway if you would like to downgrade.") is None

@@ -14,13 +14,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 import logging
+import re
 from collections.abc import Awaitable, Callable, Collection
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from aiohttp import ClientError, ClientResponseError, ClientSession
 from lorawan_connection import (
+    AckEvent,
     AddedEvent,
     ConnectionUnavailable,
     DeviceDescriptor,
@@ -29,6 +33,8 @@ from lorawan_connection import (
     DownlinkError,
     GatewayReception,
     RemovedEvent,
+    StatusEvent,
+    TxAckEvent,
     Unsubscribe,
     UpdatedEvent,
     UplinkEvent,
@@ -51,6 +57,7 @@ MILESIGHT_EUI_PREFIX = "24e124"
 MILESIGHT_BRAND = "milesight-iot"
 # Suffixes the gateway's own codec copies carry after the model name.
 _CODEC_SUFFIXES = ("_esec", "_new")
+_CODEC_VERSION = re.compile(r"_v?\d+(\.\d+)+$")
 # One request for the whole list: paging by offset is no snapshot on a busy
 # network server, which reorders the list between two requests.
 _ALL_DEVICES = 10000
@@ -61,6 +68,30 @@ Identify = Callable[[dict[str, Any]], tuple[str | None, str]]
 
 class AuthenticationError(Exception):
     """The gateway rejected the credentials."""
+
+
+@dataclass(frozen=True)
+class InventoryEntry:
+    """One device of the network server's list."""
+
+    descriptor: DeviceDescriptor
+    # The network server's own verdict: false once a device stopped reporting.
+    active: bool
+    # Inside the devices filter; only such a device gets events.
+    wanted: bool
+
+
+# The network server's "status" of a device that reports: 3 is one that
+# stopped, past its timeout. "active" stays true for such a device.
+ONLINE_STATUS = 2
+
+
+def is_online(record: dict[str, Any]) -> bool:
+    """Tell whether the network server hears a device; "active" where it has no status."""
+    status = record.get("status")
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status == ONLINE_STATUS
+    return record.get("active") is True
 
 
 def identify(record: dict[str, Any]) -> tuple[str | None, str]:
@@ -82,6 +113,8 @@ def identify(record: dict[str, Any]) -> tuple[str | None, str]:
         if codec.endswith(suffix):
             codec = codec[: -len(suffix)]
             break
+    # A codec created from the library carries its version: "AM307L-1.5.72".
+    codec = _CODEC_VERSION.sub("", codec)
     if codec not in decoder.models():
         codec = decoder.model_for_eui(eui) or codec
     return MILESIGHT_BRAND, codec
@@ -98,6 +131,27 @@ def _float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _battery(packet: dict[str, Any]) -> float | None:
+    """
+    Return the battery percentage the gateway's codec decoded, or None.
+
+    payloadJson arrives as an object or as JSON text, depending on firmware.
+    """
+    decoded = packet.get("payloadJson")
+    if isinstance(decoded, str):
+        try:
+            decoded = json.loads(decoded)
+        except ValueError:
+            return None
+    if not isinstance(decoded, dict):
+        return None
+    value = decoded.get("battery")
+    if isinstance(value, bool):
+        return None
+    level = _float(value)
+    return level if level is not None and 0 <= level <= 100 else None
 
 
 class MilesightConnection:
@@ -133,6 +187,10 @@ class MilesightConnection:
         self.network_id = network_id
         self._only = {eui.replace(":", "").lower() for eui in devices or ()}
         self.devices: dict[str, DeviceDescriptor] = {}
+        # Every device the network server lists, also those the devices
+        # filter leaves out, with whether the server counts it as active. A
+        # network view shows them; no event is ever sent for one left out.
+        self.inventory: dict[str, InventoryEntry] = {}
         # The newest uplink of each device, receptions included; a network
         # view reads it without subscribing.
         self.last_uplinks: dict[str, UplinkEvent] = {}
@@ -149,6 +207,8 @@ class MilesightConnection:
         self._tasks: list[asyncio.Task[None]] = []
         self._lock = asyncio.Lock()
         self._seen: set[tuple[str, ...]] = set()
+        # Downlinks seen leaving the gateway: devEUI, counter, time.
+        self._transmitted: set[tuple[str, str, str]] = set()
         self._connecting = False
         self._closed = False
 
@@ -190,6 +250,7 @@ class MilesightConnection:
                 f"Incomplete device list: {len(records)} of {expected}"
             )
         snapshot: dict[str, DeviceDescriptor] = {}
+        inventory: dict[str, InventoryEntry] = {}
         for record in records:
             brand, model_id = self._identify(record)
             try:
@@ -208,8 +269,13 @@ class MilesightConnection:
             except ValueError:
                 # No usable devEUI: such a record cannot carry events.
                 continue
-            if self._wanted(descriptor.dev_eui):
+            wanted = self._wanted(descriptor.dev_eui)
+            inventory[descriptor.dev_eui] = InventoryEntry(
+                descriptor, active=is_online(record), wanted=wanted
+            )
+            if wanted:
                 snapshot[descriptor.dev_eui] = descriptor
+        self.inventory = inventory
         return snapshot
 
     def _wanted(self, eui: str) -> bool:
@@ -284,10 +350,114 @@ class MilesightConnection:
 
     async def _prime_packets(self) -> None:
         """Mark what the log holds now as seen, so it is not replayed."""
-        self._seen = {self._key(p) for p in await self._read_packets()}
+        packets = await self._read_packets()
+        self._seen = {self._key(p) for p in packets}
+        self._transmitted = {
+            sent for sent in map(self._sent, packets) if sent is not None
+        }
 
-    def _uplinks(self, packets: list[dict[str, Any]]) -> list[UplinkEvent]:
-        """Merge the receptions of each new uplink into one event."""
+    def _acks(self, packets: list[dict[str, Any]]) -> list[AckEvent]:
+        """
+        Tell the ACKs of confirmed downlinks, from the packet log.
+
+        A confirmed downlink is logged as DnCnf with its frame counter; the
+        device's next uplink sets the ACK bit, logged as ack "true". The ACK
+        names the queue item as async_send_downlink did: devEUI and counter.
+        """
+        events: list[AckEvent] = []
+        last_down: dict[str, str] = {}
+        told: set[tuple[str, str]] = set()
+        for packet in sorted(packets, key=lambda p: str(p.get("time") or "")):
+            eui = str(packet.get("devEUI", "")).lower()
+            kind = str(packet.get("type", ""))
+            if kind == "DnCnf":
+                last_down[eui] = str(packet.get("fCnt"))
+            elif (
+                # The log repeats an acknowledging uplink as a row of type ACK.
+                (kind.startswith("Up") or kind == "ACK")
+                and str(packet.get("ack")).lower() == "true"
+                and self._key(packet) not in self._seen
+                and (eui, str(packet.get("fCnt"))) not in told
+            ):
+                try:
+                    received_at = datetime.fromisoformat(str(packet.get("time")))
+                except ValueError:
+                    continue
+                if received_at.tzinfo is None:
+                    continue
+                told.add((eui, str(packet.get("fCnt"))))
+                events.append(
+                    AckEvent(
+                        network_id=self.network_id,
+                        dev_eui=str(packet.get("devEUI")),
+                        received_at=received_at,
+                        queue_item_id=f"{eui}:{last_down.get(eui, 'queued')}",
+                        acknowledged=True,
+                    )
+                )
+        return events
+
+    @staticmethod
+    def _sent(packet: dict[str, Any]) -> tuple[str, str, str] | None:
+        """
+        Name a downlink that left the gateway; one still queued has no time.
+
+        A downlink without a payload carries the network server's own MAC
+        commands and is nobody's command.
+        """
+        if (
+            not str(packet.get("type", "")).startswith("Dn")
+            or not packet.get("time")
+            or not packet.get("payloadBase64")
+        ):
+            return None
+        return (
+            str(packet.get("devEUI", "")).lower(),
+            str(packet.get("fCnt")),
+            str(packet.get("time")),
+        )
+
+    def _transmissions(self, packets: list[dict[str, Any]]) -> list[TxAckEvent]:
+        """
+        Tell the downlinks that left the gateway since the last poll.
+
+        A Class A device takes a downlink right after one of its uplinks; the
+        ACK of a confirmed one only comes with the uplink after that.
+        """
+        events: list[TxAckEvent] = []
+        for packet in packets:
+            sent = self._sent(packet)
+            if sent is None or sent in self._transmitted:
+                continue
+            try:
+                received_at = datetime.fromisoformat(sent[2])
+                counter = int(packet.get("fCnt"))
+            except (TypeError, ValueError):
+                continue
+            if received_at.tzinfo is None:
+                continue
+            events.append(
+                TxAckEvent(
+                    network_id=self.network_id,
+                    dev_eui=str(packet.get("devEUI")),
+                    received_at=received_at,
+                    gateway_id=str(packet.get("gatewayMac") or ""),
+                    downlink_id=counter,
+                )
+            )
+        return events
+
+    def _uplinks(
+        self, packets: list[dict[str, Any]]
+    ) -> list[UplinkEvent | StatusEvent]:
+        """
+        Merge the receptions of each new uplink into one event.
+
+        An uplink whose decoded payload carries a battery percentage is
+        followed by a status event with it. Milesight devices report their
+        battery in the payload, not in LoRaWAN's device status answer, and a
+        LoRaWAN overview reads the battery from the status.
+        """
         grouped: dict[tuple[str, ...], list[dict[str, Any]]] = {}
         for packet in packets:
             if not str(packet.get("type", "")).startswith("Up"):
@@ -295,7 +465,7 @@ class MilesightConnection:
             key = self._key(packet)
             if key not in self._seen:
                 grouped.setdefault(key, []).append(packet)
-        events = []
+        events: list[UplinkEvent | StatusEvent] = []
         for receptions in grouped.values():
             first = receptions[0]
             try:
@@ -327,12 +497,35 @@ class MilesightConnection:
                 )
             except ValueError:
                 continue
+            if (battery := _battery(first)) is not None:
+                events.append(
+                    StatusEvent(
+                        network_id=self.network_id,
+                        dev_eui=str(first.get("devEUI")),
+                        received_at=received_at,
+                        battery_level_unavailable=False,
+                        battery_level=battery,
+                    )
+                )
+        # Stable: a status stays right behind its uplink.
         return sorted(events, key=lambda event: event.received_at)
 
     async def poll_packets(self) -> None:
         """Deliver the uplinks the packet log gained since the last poll."""
         packets = await self._read_packets()
-        events = self._uplinks(packets)
+        # An ACK comes before the uplink that carries it, so a listener that
+        # counts uplinks after a downlink already knows it arrived.
+        events = sorted(
+            [
+                *self._acks(packets),
+                *self._transmissions(packets),
+                *self._uplinks(packets),
+            ],
+            key=lambda event: event.received_at,
+        )
+        self._transmitted = {
+            sent for sent in map(self._sent, packets) if sent is not None
+        }
         # ponytail: more than packet_window packets between two polls are
         # lost; shorten the interval or widen the window on a busy network.
         self._seen = {self._key(p) for p in packets}
@@ -345,7 +538,8 @@ class MilesightConnection:
             await self.refresh()
         for event in events:
             if not self._closed and event.dev_eui in self.devices:
-                self.last_uplinks[event.dev_eui] = event
+                if isinstance(event, UplinkEvent):
+                    self.last_uplinks[event.dev_eui] = event
                 self._emit(event)
 
     # --- lifecycle ----------------------------------------------------------

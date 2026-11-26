@@ -35,6 +35,9 @@ class FakeResponse:
     async def text(self):
         return self._body
 
+    async def read(self):
+        return self._body if isinstance(self._body, bytes) else self._body.encode()
+
 
 class FakeSession:
     """
